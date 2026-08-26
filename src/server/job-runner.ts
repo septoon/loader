@@ -1,0 +1,145 @@
+import { EventEmitter } from 'node:events'
+import type { Job } from '../shared/types.js'
+import type { AppConfig } from './config.js'
+import { JobDatabase, type InternalJob } from './database.js'
+import { sanitizePublicError } from './security.js'
+import { TorrentTransfer } from './torrent-transfer.js'
+import { YandexDiskAdapter } from './yandex-disk.js'
+
+export class JobRunner {
+  readonly events = new EventEmitter()
+  readonly #torrent: TorrentTransfer | null
+  #timer: NodeJS.Timeout | null = null
+  #running: Promise<void> | null = null
+
+  constructor(
+    private readonly database: JobDatabase,
+    private readonly storage: YandexDiskAdapter | null,
+    config: AppConfig,
+  ) {
+    this.#torrent = storage
+      ? new TorrentTransfer(database, storage, config, () => this.notify())
+      : null
+  }
+
+  start(): void {
+    if (this.#timer) return
+    this.#timer = setInterval(() => this.wake(), 1_500)
+    this.#timer.unref()
+    this.wake()
+  }
+
+  async stop(): Promise<void> {
+    if (this.#timer) clearInterval(this.#timer)
+    this.#timer = null
+    this.#torrent?.abortAll()
+    await this.#running?.catch(() => undefined)
+  }
+
+  wake(): void {
+    if (this.#running) return
+    this.#running = this.tick().finally(() => {
+      this.#running = null
+      if (this.database.nextRunnableJob()) queueMicrotask(() => this.wake())
+    })
+  }
+
+  notify(job?: Job): void {
+    this.events.emit('change', job ?? null)
+  }
+
+  pauseJob(id: string): Job {
+    const job = this.database.pauseJob(id)
+    if (job.sourceKind !== 'direct-url') this.#torrent?.abort(id)
+    this.notify(job)
+    return job
+  }
+
+  resumeJob(id: string): Job {
+    const job = this.database.resumeJob(id)
+    this.notify(job)
+    this.wake()
+    return job
+  }
+
+  cancelJob(id: string): Job {
+    const job = this.database.cancelJob(id)
+    if (job.sourceKind !== 'direct-url') this.#torrent?.abort(id)
+    this.notify(job)
+    return job
+  }
+
+  private async tick(): Promise<void> {
+    const job = this.database.nextRunnableJob()
+    if (job) await this.process(job)
+  }
+
+  private async process(job: InternalJob): Promise<void> {
+    if (!this.storage) {
+      this.fail(job, 'Яндекс Диск не настроен')
+      return
+    }
+
+    if (job.sourceKind !== 'direct-url') {
+      try {
+        await this.#torrent!.process(job)
+      } catch (error) {
+        const current = this.database.getInternalJob(job.id)
+        if (current && ['paused', 'cancelled'].includes(current.status)) return
+        this.fail(job, sanitizePublicError(error))
+      }
+      return
+    }
+
+    try {
+      let operationHref = job.operationHref
+      if (job.status === 'queued') {
+        this.database.updateJob(job.id, { status: 'transferring', progress: null, errorMessage: null })
+        this.database.addEvent(job.id, 'info', 'Яндекс Диск начал прямой импорт')
+        this.notify(this.database.getJob(job.id) ?? undefined)
+        operationHref = await this.storage.startRemoteImport(job.source, job.destinationPath)
+        this.database.updateJob(job.id, { operationHref })
+      }
+
+      if (job.status === 'verifying') {
+        await this.verifyDirect(job)
+        return
+      }
+      if (!operationHref) throw new Error('Не найдена контрольная точка операции импорта')
+
+      const operation = await this.storage.getOperation(operationHref)
+      if (operation.status === 'in-progress') return
+      if (operation.status === 'failed') throw new Error('Яндекс Диск сообщил об ошибке удалённого импорта')
+
+      this.database.updateJob(job.id, { status: 'verifying', progress: 1 })
+      this.database.addEvent(job.id, 'info', 'Импорт завершён, проверяются метаданные')
+      await this.verifyDirect(job)
+    } catch (error) {
+      this.fail(job, sanitizePublicError(error))
+    }
+  }
+
+  private async verifyDirect(job: InternalJob): Promise<void> {
+    const metadata = await this.storage!.getMetadata(job.destinationPath)
+    if (metadata.type !== 'file' || !metadata.md5 || !Number.isSafeInteger(metadata.size)) {
+      throw new Error('Итоговый файл не прошёл проверку метаданных')
+    }
+    const completed = this.database.updateJob(job.id, {
+      status: 'completed', progress: 1, bytesTransferred: metadata.size ?? null,
+      totalBytes: metadata.size ?? null, speedBytesPerSecond: 0, errorMessage: null,
+    })
+    this.database.addEvent(job.id, 'info', 'Файл сохранён и проверен на Яндекс Диске')
+    this.notify(completed)
+  }
+
+  private fail(job: InternalJob, message: string): void {
+    const current = this.database.getInternalJob(job.id)
+    if (!current || ['paused', 'cancelled'].includes(current.status)) return
+    for (const file of current.files.filter((entry) => ['hashing', 'transferring'].includes(entry.status))) {
+      this.database.updateJobFile(file.id, { status: 'failed' })
+    }
+    const failed = this.database.updateJob(job.id, { status: 'failed', speedBytesPerSecond: 0, errorMessage: message })
+    this.database.addEvent(job.id, 'error', message)
+    this.notify(failed)
+  }
+}

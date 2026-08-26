@@ -1,0 +1,43 @@
+{
+  "name": "loader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server/index.ts",
+    "dev:web": "vite",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "vite build",
+    "start": "node dist/server/server/index.js",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "poc:torrent": "node --expose-gc poc/torrent-bounded.mjs",
+    "poc:yandex": "node poc/yandex-upload.mjs",
+    "yandex:store-token": "node scripts/store-yandex-token.mjs",
+    "test": "tsx --test src/server/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/static": "^10.1.3",
+    "fastify": "^5.12.1",
+    "ipaddr.js": "^2.5.0",
+    "parse-torrent": "^11.0.24",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "webtorrent": "3.0.21"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

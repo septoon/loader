@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+runtime/
+cache/
+tmp/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

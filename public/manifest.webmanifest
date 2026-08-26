@@ -1,0 +1,18 @@
+{
+  "name": "Лоадер",
+  "short_name": "Лоадер",
+  "description": "Прямая передача медиафайлов на Яндекс Диск",
+  "lang": "ru",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/loader-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

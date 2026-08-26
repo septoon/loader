@@ -17,6 +17,7 @@
     "poc:torrent": "node --expose-gc poc/torrent-bounded.mjs",
     "poc:yandex": "node poc/yandex-upload.mjs",
     "yandex:store-token": "node scripts/store-yandex-token.mjs",
+    "production:create-secrets": "node scripts/create-production-secrets.mjs",
     "test": "tsx --test src/server/*.test.ts"
   },
   "dependencies": {
@@ -36,6 +37,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",
+    "create-torrent": "^6.1.3",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"

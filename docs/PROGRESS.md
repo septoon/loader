@@ -37,7 +37,7 @@ npm audit --omit=dev
 
 - TypeScript server/web: passed.
 - Production Vite build: passed; client bundle 215.59 kB, gzip 67.20 kB.
-- 7 tests passed: SQLite persistence/events, URL normalization, credentials, executable magnet validation/redaction, safe torrent file selection, URL/OAuth redaction и SSRF IPv4/IPv6 regression.
+- 8 tests passed: authenticated API/multipart intake, SQLite persistence/events, URL normalization, credentials, executable magnet validation/redaction, safe torrent file selection, URL/OAuth redaction и SSRF IPv4/IPv6 regression.
 - `npm run poc:torrent`: 256 MiB synthetic source, injected disconnect/retry, SHA-256 match, cache limit 24 MiB, фактический peak cache 7 MiB.
 - Browser QA через in-app Browser прошёл на `1440x900` и `390x844`: login, magnet analysis, modal, tabs, desktop/mobile render, нет horizontal overflow, framework overlay и console warnings/errors.
 - `npm audit --omit=dev`: 4 high findings остаются в зафиксированном WebTorrent `3.0.21` path через `ip@2.0.1`; `npm audit fix --force` предлагает недопустимый downgrade до `webtorrent@0.7.3`. Reachability/изоляция описаны ранее.

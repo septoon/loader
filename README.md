@@ -26,4 +26,10 @@ npm run yandex:store-token
 
 Production-переменные перечислены в `.env.example`. Полный медиофайл на VPS не сохраняется; размер piece-cache и резерв свободного диска обязательны к контролю.
 
+Production password/session secret создаются без вывода значений и остаются в ignored-каталоге:
+
+```bash
+npm run production:create-secrets
+```
+
 Подробности архитектуры и актуальный статус находятся в `docs/PROJECT_CONTEXT.md`, `docs/DECISIONS.md`, `docs/PROGRESS.md` и `docs/HANDOFF.md`.

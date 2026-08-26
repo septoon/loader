@@ -6,7 +6,7 @@ Production-контур реализован: Fastify API/SSE, signed single-use
 
 # Last completed step
 
-`npm run typecheck`, `npm run build`, 7 tests и 256 MiB bounded torrent PoC проходят. Browser QA: `1440x900` и `390x844`, вход, magnet analysis, status modal, tabs, без overflow и console errors.
+`npm run typecheck`, `npm run build`, 8 tests и 256 MiB bounded torrent PoC проходят. Browser QA: `1440x900` и `390x844`, вход, magnet analysis, status modal, tabs, без overflow и console errors.
 
 # Current blocker
 

@@ -119,15 +119,16 @@ export function selectTorrentFiles(
     : destination
   const root = destinationRoots[resolvedDestination]
   const useContainer = selected.length > 1
-  const destinationPath = useContainer ? path.posix.join(root, safeTorrentName) : root
+  const containerPath = useContainer ? path.posix.join(root, safeTorrentName) : root
+  const mappedFiles = selected.map((file) => ({
+    ...file,
+    destinationPath: path.posix.join(containerPath, useContainer ? file.relativePath : sanitizeFileName(file.name)),
+  }))
 
   return {
     destination: resolvedDestination,
-    destinationPath,
-    files: selected.map((file) => ({
-      ...file,
-      destinationPath: path.posix.join(destinationPath, useContainer ? file.relativePath : sanitizeFileName(file.name)),
-    })),
+    destinationPath: useContainer ? containerPath : mappedFiles[0]!.destinationPath,
+    files: mappedFiles,
   }
 }
 
@@ -186,7 +187,7 @@ function sanitizeRelativePath(value: string, torrentName: string): string {
   const parts = value.replaceAll('\\', '/').split('/').filter(Boolean)
   if (parts.some((part) => part === '.' || part === '..')) throw new InputError('Торрент содержит небезопасный путь')
   const sanitized = parts.map(sanitizeFileName)
-  if (sanitized[0]?.localeCompare(torrentName, undefined, { sensitivity: 'accent' }) === 0) sanitized.shift()
+  if (sanitized.length > 1 && sanitized[0]?.localeCompare(torrentName, undefined, { sensitivity: 'accent' }) === 0) sanitized.shift()
   if (sanitized.length === 0) throw new InputError('Торрент содержит пустой путь файла')
   return sanitized.join('/')
 }

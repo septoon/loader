@@ -10,13 +10,15 @@ Production-контур реализован: Fastify API/SSE, signed single-use
 
 # Current blocker
 
-Блокера реализации нет. Остался live-E2E риск production glue: безопасный legal torrent нужно реально передать на Яндекс Диск, оборвать процесс и подтвердить восстановление после рестарта.
+Блокера реализации нет. Deployment временно заблокирован внешней связью: GitHub, Lumastack MCP, HTTPS и SSH banner синхронно перестали отвечать. На Mac default route идёт через подключённый `Happ` VPN (`utun6`); менять или перезапускать VPN без пользователя нельзя. На VPS в этом состоянии ничего не изменено.
+
+После восстановления связи остаётся live-E2E риск production glue: безопасный legal torrent нужно реально передать на Яндекс Диск, оборвать процесс и подтвердить восстановление после рестарта.
 
 Для direct remote import остаётся crash-window между получением operation URL от Яндекс и её сохранением в SQLite. Нужен реальный restart test незавершённой operation и idempotent recovery policy. Активную remote-import operation подтверждённым Disk API сейчас нельзя безопасно pause/cancel; UI это не имитирует.
 
 # Next action
 
-Развернуть текущую версию на VPS, проверить health/auth/static/nginx. Затем на отдельном безопасном target провести live torrent transfer + kill/restart recovery и удалить тестовый файл после явного разрешения.
+Повторить `gh repo create/push` и Lumastack MCP health. Затем загрузить подготовленный release, установить отдельный Node 22, подключить shared runtime secrets, запустить `loader` через PM2, настроить nginx/TLS и проверить public health/auth/static. После этого на отдельном безопасном target провести live torrent transfer + kill/restart recovery и удалить тестовый файл после явного разрешения.
 
 # Relevant files
 

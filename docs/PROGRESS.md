@@ -48,6 +48,13 @@ npm audit --omit=dev
 - Не выполнен kill/restart test живой torrent-задачи. Hashes и upload URL сохраняются, поэтому worker повторяет metadata/hash pass при необходимости и получает authoritative offset, но это ещё нужно подтвердить на безопасном target.
 - Для direct remote import остаётся малое crash-window между ответом API и записью operation URL.
 
+### Git и deployment state
+
+- Локальный Git создан, secrets/runtime исключены. Коммиты: `301f51e` и `a766ed2`.
+- Production archive `/tmp/loader-release-a766ed2.tgz`: `179746` bytes, SHA-256 `20eef4736b812e6f57962318dfefb9dbe96511e5c7987fce6f3e2000cbd71e99`.
+- Production password/session secret созданы локально в ignored `runtime/secrets/` с `0600`; Yandex token также остаётся только в ignored secret file.
+- GitHub repo/push и VPS deploy не завершены: одновременно перестали отвечать GitHub TLS, Lumastack MCP и HTTP/TLS/SSH application handshakes. TCP connect к VPS проходил, но server response/banner не приходил. После нескольких независимых повторов mutation на VPS не выполнялась.
+
 ## 2026-08-26 — реальный Yandex Disk transport подтверждён
 
 OAuth завершён штатно. Token хранится только в `runtime/secrets/yandex-token` с правами `0600`; в Git, browser automation и logs он не попадал.

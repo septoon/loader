@@ -27,6 +27,7 @@ npm run yandex:store-token
 ```
 
 Production-переменные перечислены в `.env.example`. Полный медиофайл на VPS не сохраняется; размер piece-cache и резерв свободного диска обязательны к контролю.
+Тайм-аут одного Yandex PUT по умолчанию — 360 минут; после неоднозначного обрыва worker всё равно получает server-authoritative offset и продолжает тот же файл.
 
 Production password/session secret создаются без вывода значений и остаются в ignored-каталоге:
 

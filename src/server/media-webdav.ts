@@ -148,7 +148,8 @@ function encodePath(value: string): string {
 }
 
 function escapeXml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+  return value.replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/gu, '')
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 }
 
 function contentType(name: string): string {

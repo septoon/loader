@@ -18,7 +18,12 @@ test('медиатека кеширует download URL и читает толь�
     }
     if (url.hostname === 's1.storage.yandex.net') {
       ranges.push(String(new Headers(init?.headers).get('range')))
-      return new Response(Buffer.from('abcd'), { status: 206 })
+      const range = String(new Headers(init?.headers).get('range'))
+      const match = /^bytes=(\d+)-(\d+)$/u.exec(range)!
+      return new Response(Buffer.from('abcd'), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${match[1]}-${match[2]}/100` },
+      })
     }
     throw new Error(`unexpected URL ${url.href}`)
   }) as typeof fetch

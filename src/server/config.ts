@@ -46,7 +46,7 @@ export function loadConfig(root = process.cwd()): AppConfig {
     pieceCacheMaxBytes: parseMiB(process.env.LOADER_PIECE_CACHE_MIB, 128) * 1024 * 1024,
     diskReserveBytes: parseMiB(process.env.LOADER_DISK_RESERVE_MIB, 1_024) * 1024 * 1024,
     torrentMetadataTimeoutMs: parseMinutes(process.env.LOADER_TORRENT_METADATA_TIMEOUT_MIN, 10),
-    uploadTimeoutMs: parseMinutes(process.env.LOADER_UPLOAD_TIMEOUT_MIN, 180),
+    uploadTimeoutMs: parseMinutes(process.env.LOADER_UPLOAD_TIMEOUT_MIN, 360),
   }
 }
 

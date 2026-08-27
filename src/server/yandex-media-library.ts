@@ -108,8 +108,12 @@ export class YandexMediaLibrary implements MediaLibrary {
           continue
         }
         if ([401, 403, 404].includes(response.status) && refresh === 0) break
-        if (![200, 206].includes(response.status)) {
+        if (response.status !== 206) {
           throw new YandexMediaHttpError(response.status, `Яндекс Диск отклонил чтение: HTTP ${response.status}`)
+        }
+        const contentRange = /^bytes (\d+)-(\d+)\/(\d+|\*)$/u.exec(response.headers.get('content-range') ?? '')
+        if (!contentRange || Number(contentRange[1]) !== start || Number(contentRange[2]) !== end) {
+          throw new Error('Яндекс Диск вернул некорректный диапазон')
         }
         if (!response.body) throw new Error('Яндекс Диск вернул пустой поток')
         return response.body

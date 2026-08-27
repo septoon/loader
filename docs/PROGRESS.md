@@ -8,6 +8,7 @@ Production-контур теперь принимает прямые HTTP(S) URL
 
 - Сохранён исходный каркас: боковая навигация, composer источника, status tabs, табличная очередь и раскрытые сведения задачи.
 - UI полностью переведён на русский, включая название PWA, login, document title и operational copy.
+- Новый пользовательский арт подключён как PWA icon: PNG 192×192 и maskable 512×512; отдельно подготовлены Apple Touch Icon 180×180 и favicon 32×32.
 - Каркас сохранён: sidebar, composer, tabs, очередь и раскрываемые сведения. Добавлены цельные surface-карточки, status-pill, рабочее окно состояния, drag-and-drop `.torrent`, реальный список файлов и responsive mobile navigation.
 - Direct URL, magnet и `.torrent` проходят анализ до создания задачи; для auto-каталога magnet UI явно сообщает, что `Фильмы`/`Сериалы` определятся после metadata.
 - Актуальный визуальный reference: `docs/design/loader-russian-concept.png`.
@@ -37,6 +38,7 @@ npm audit --omit=dev
 
 - TypeScript server/web: passed.
 - Production Vite build: passed; client bundle 215.59 kB, gzip 67.20 kB.
+- PWA manifest ссылается на существующие PNG-иконки 192×192 и 512×512; production build включает manifest, Apple Touch Icon и favicon.
 - 8 tests passed: authenticated API/multipart intake, SQLite persistence/events, URL normalization, credentials, executable magnet validation/redaction, safe torrent file selection, URL/OAuth redaction и SSRF IPv4/IPv6 regression.
 - `npm run poc:torrent`: 256 MiB synthetic source, injected disconnect/retry, SHA-256 match, cache limit 24 MiB, фактический peak cache 7 MiB.
 - Browser QA через in-app Browser прошёл на `1440x900` и `390x844`: login, magnet analysis, modal, tabs, desktop/mobile render, нет horizontal overflow, framework overlay и console warnings/errors.

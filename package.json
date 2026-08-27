@@ -18,6 +18,7 @@
     "poc:yandex": "node poc/yandex-upload.mjs",
     "yandex:store-token": "node scripts/store-yandex-token.mjs",
     "production:create-secrets": "node scripts/create-production-secrets.mjs",
+    "production:create-vlc-secrets": "node scripts/create-vlc-sftp-secrets.mjs",
     "test": "tsx --test src/server/*.test.ts"
   },
   "dependencies": {

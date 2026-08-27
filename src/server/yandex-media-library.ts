@@ -79,15 +79,27 @@ export class YandexMediaLibrary implements MediaLibrary {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 512 * 1024) {
       throw new Error('Некорректный диапазон чтения')
     }
-    const end = offset + length - 1
+    const body = await this.openRead(relativePath, offset, offset + length - 1)
+    const data = Buffer.from(await new Response(body).arrayBuffer())
+    if (data.length > length) return data.subarray(0, length)
+    return data
+  }
+
+  async openRead(relativePath: string, start: number, end: number, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
+      throw new Error('Некорректный диапазон чтения')
+    }
     for (let refresh = 0; refresh < 2; refresh += 1) {
       let url = await this.getDownloadUrl(relativePath, refresh > 0)
       for (let redirect = 0; redirect < 3; redirect += 1) {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 30_000)
+        signal?.addEventListener('abort', () => controller.abort(), { once: true })
         const response = await fetch(url, {
-          headers: { Range: `bytes=${offset}-${end}` },
+          headers: { Range: `bytes=${start}-${end}` },
           redirect: 'manual',
-          signal: AbortSignal.timeout(30_000),
-        })
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timeout))
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           const location = response.headers.get('location')
           if (!location) throw new Error('Яндекс Диск вернул редирект без адреса')
@@ -99,9 +111,8 @@ export class YandexMediaLibrary implements MediaLibrary {
         if (![200, 206].includes(response.status)) {
           throw new YandexMediaHttpError(response.status, `Яндекс Диск отклонил чтение: HTTP ${response.status}`)
         }
-        const data = Buffer.from(await response.arrayBuffer())
-        if (data.length > length) return data.subarray(0, length)
-        return data
+        if (!response.body) throw new Error('Яндекс Диск вернул пустой поток')
+        return response.body
       }
     }
     throw new Error('Не удалось обновить ссылку чтения Яндекс Диска')

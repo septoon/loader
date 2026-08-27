@@ -4,8 +4,10 @@
 
 - Прямые HTTP(S) ссылки передаются официальным remote import Яндекс Диска без проксирования медиабайтов через VPS.
 - Magnet и `.torrent` читаются последовательно через ограниченный piece-cache и отправляются continuous PUT.
+- Страницы Rutube разрешаются через официальный play-options API и сохраняются последовательным HLS-потоком без staging.
 - После обрыва Яндекс Диск сообщает authoritative offset через `HEAD`; задача продолжается без полного staging.
 - Очередь, события, per-file hashes и checkpoints хранятся в SQLite WAL.
+- Папка `/Media` доступна VLC через отдельный read-only SFTP-процесс; чтение идёт диапазонами из Яндекс Диска без локального медиакеша.
 
 ## Локальный запуск
 
@@ -30,6 +32,9 @@ Production password/session secret создаются без вывода зна
 
 ```bash
 npm run production:create-secrets
+npm run production:create-vlc-secrets
 ```
+
+`loader-vlc` запускается вторым приложением из `ecosystem.config.cjs`. По умолчанию он слушает TCP `2022`, показывает содержимое `/Media` как корень SFTP, допускает не более 8 подключений и запрещает все операции записи. Учётные данные и постоянный SSH host key остаются только в ignored `runtime/secrets/`.
 
 Подробности архитектуры и актуальный статус находятся в `docs/PROJECT_CONTEXT.md`, `docs/DECISIONS.md`, `docs/PROGRESS.md` и `docs/HANDOFF.md`.

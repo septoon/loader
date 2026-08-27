@@ -31,6 +31,7 @@ test('SFTP path не выходит из виртуального /Media', () =>
   assert.equal(normalizeSftpPath('/Movies/../secret'), null)
   assert.equal(normalizeSftpPath('../../secret'), null)
   assert.equal(normalizeSftpPath('Movies/film.mp4'), '/Movies/film.mp4')
+  assert.equal(normalizeSftpPath('/Movies/'), '/Movies')
 })
 
 test('read-only SFTP перечисляет папки и читает диапазон файла', async () => {

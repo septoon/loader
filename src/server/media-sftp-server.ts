@@ -218,7 +218,8 @@ export function normalizeSftpPath(input: string): string | null {
   if (absolute.split('/').includes('..')) return null
   const normalized = path.posix.normalize(absolute)
   if (!normalized.startsWith('/')) return null
-  return normalized === '/.' ? '/' : normalized
+  if (normalized === '/.') return '/'
+  return normalized.length > 1 && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized
 }
 
 function safeEqual(input: Buffer, expected: Buffer): boolean {

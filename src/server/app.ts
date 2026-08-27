@@ -12,7 +12,10 @@ import type { Destination, HealthResponse } from '../shared/types.js'
 import type { AppConfig } from './config.js'
 import { JobConflictError, JobDatabase, JobNotFoundError } from './database.js'
 import { JobRunner } from './job-runner.js'
+import type { MediaCredentials } from './media-secrets.js'
+import { registerMediaWebDav } from './media-webdav.js'
 import { analyzeSource, InputError, sanitizePublicError, selectTorrentFiles } from './security.js'
+import type { YandexMediaLibrary } from './yandex-media-library.js'
 
 const sessionCookie = 'loader_session'
 
@@ -20,9 +23,10 @@ interface Dependencies {
   config: AppConfig
   database: JobDatabase
   runner: JobRunner
+  media?: { library: YandexMediaLibrary, credentials: MediaCredentials }
 }
 
-export async function buildApp({ config, database, runner }: Dependencies) {
+export async function buildApp({ config, database, runner, media }: Dependencies) {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || 'info',
@@ -83,6 +87,8 @@ export async function buildApp({ config, database, runner }: Dependencies) {
     if (!request.url.startsWith('/api/') || ['/api/health', '/api/session'].includes(request.url)) return
     if (!isAuthenticated(request)) return reply.code(401).send({ error: 'Требуется вход' })
   })
+
+  if (media) registerMediaWebDav(app, media.library, media.credentials)
 
   app.post<{ Body: { source?: string, destination?: Destination } }>('/api/sources/analyze', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },

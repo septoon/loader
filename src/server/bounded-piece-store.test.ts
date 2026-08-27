@@ -57,6 +57,39 @@ test('bounded cache keeps the active read window selected when full', async () =
   }
 })
 
+test('active reader keeps torrent selection bounded from its first piece', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'loader-piece-store-'))
+  const selectionCalls: string[] = []
+  const torrent = {
+    pieces: Array.from({ length: 20 }),
+    bitfield: { get: () => false },
+    _deselect: (start: number, end: number) => selectionCalls.push(`deselect:${start}-${end}`),
+    _select: (start: number, end: number) => selectionCalls.push(`select:${start}-${end}`),
+  }
+  const store = new BoundedPieceStore(8, {
+    cachePath: root,
+    maxBytes: 16,
+    reserveBytes: 0,
+    headroomPieces: 2,
+    torrent,
+  })
+
+  try {
+    await store.ready
+    store.setReadCursor(4)
+    store.constrainToReadWindow()
+    assert.deepEqual(selectionCalls.slice(-2), ['select:4-6', 'deselect:4-19'])
+
+    store.setReadCursor(5)
+    assert.deepEqual(selectionCalls.slice(-2), ['select:5-7', 'deselect:4-19'])
+    assert.equal(store.capacityPaused, true)
+    assert.equal(store.readWindowLocked, true)
+  } finally {
+    await new Promise<void>((resolve) => store.destroy(() => resolve()))
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 function put(store: BoundedPieceStore, index: number): Promise<void> {
   return new Promise((resolve, reject) => {
     store.put(index, Buffer.alloc(8, index), (error) => error ? reject(error) : resolve())

@@ -47,6 +47,9 @@ export class BoundedPieceStore {
   closed = false
   writing = false
   capacityPaused = false
+  readWindowLocked = false
+  selectionStart = 0
+  selectionEnd: number | null = null
 
   constructor(chunkLength: number, options: StoreOptions = {}) {
     this.chunkLength = chunkLength
@@ -64,6 +67,15 @@ export class BoundedPieceStore {
     this.readCursor = index
     if (this.capacityPaused) this.selectReadWindow()
     void this.drain()
+  }
+
+  constrainToReadWindow(selectionStart = this.readCursor, selectionEnd = (this.torrent?.pieces?.length ?? 1) - 1): void {
+    if (!this.torrent?.pieces?.length) return
+    this.readWindowLocked = true
+    this.selectionStart = selectionStart
+    this.selectionEnd = selectionEnd
+    this.capacityPaused = true
+    this.selectReadWindow()
   }
 
   put(index: number, value: Uint8Array, callback: Callback = noop): void {
@@ -209,20 +221,22 @@ export class BoundedPieceStore {
 
   private resumeSelectionIfSafe(): void {
     if (!this.capacityPaused || !this.torrent?.pieces?.length) return
+    if (this.readWindowLocked) return
     if (this.usedBytes > this.maxBytes - (2 * this.chunkLength)) return
     this.capacityPaused = false
-    this.torrent._select?.(this.readCursor, this.torrent.pieces.length - 1, 1, null, true)
+    this.torrent._select?.(this.readCursor, this.selectionEnd ?? this.torrent.pieces.length - 1, 1, null, true)
   }
 
   private selectReadWindow(): void {
     if (!this.torrent?.pieces?.length) return
     const lastPiece = this.torrent.pieces.length - 1
-    const windowEnd = Math.min(lastPiece, this.readCursor + this.headroomPieces)
+    const selectedLastPiece = this.selectionEnd ?? lastPiece
+    const windowEnd = Math.min(selectedLastPiece, this.readCursor + this.headroomPieces)
     // Keep the torrent interested while replacing the iterator's full-file
     // selection. Deselecting first makes peers see a transient uninterested
     // state and they can disconnect before the bounded window is installed.
     this.torrent._select?.(this.readCursor, windowEnd, 1, null, true)
-    this.torrent._deselect?.(0, lastPiece, true)
+    this.torrent._deselect?.(this.selectionStart, selectedLastPiece, true)
   }
 
   private async evictFarthestAfter(index: number): Promise<boolean> {

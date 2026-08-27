@@ -315,8 +315,10 @@ async function * readTorrentFile(
   const store = torrent.store?.store ?? torrent.store
   const pieceStore: BoundedPieceStore | undefined = torrent.loaderPieceStore ?? store?.loaderPieceStore ?? store
   const firstPiece = Math.floor((Number(file.offset) + start) / Number(torrent.pieceLength))
+  const lastPiece = Math.floor((Number(file.offset) + Number(file.length) - 1) / Number(torrent.pieceLength))
   pieceStore?.setReadCursor?.(firstPiece)
   const iterator = file[Symbol.asyncIterator]({ start })
+  pieceStore?.constrainToReadWindow?.(firstPiece, lastPiece)
   reconnectManualPeers(torrent)
   const refreshPeers = () => {
     refreshTorrentPeers(torrent)

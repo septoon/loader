@@ -267,6 +267,7 @@ async function openTorrent(
       },
       strategy: 'sequential',
     }, (readyTorrent: any) => finish(null, readyTorrent))
+    rememberDiscoveredPeers(torrent)
     const error = (cause: Error) => finish(cause)
     torrent.once('error', error)
     client.once('error', error)
@@ -347,11 +348,31 @@ async function * readTorrentFile(
 }
 
 export function refreshTorrentPeers(torrent: any): void {
+  for (const peer of torrent.loaderDiscoveredPeers ?? []) {
+    try {
+      torrent.removePeer(peer)
+      torrent.addPeer(peer)
+    } catch {
+      // The address can become invalid between discovery and reconnect.
+    }
+  }
   try {
     torrent.discovery?.tracker?.update?.({ numwant: 50 })
   } catch {
     // The normal discovery interval and inactivity timeout remain active.
   }
+}
+
+function rememberDiscoveredPeers(torrent: any): void {
+  const peers = new Set<string>()
+  torrent.loaderDiscoveredPeers = peers
+  torrent.on('peer', (peer: unknown) => {
+    if (typeof peer !== 'string') return
+    peers.add(peer)
+    if (peers.size <= 50) return
+    const oldest = peers.values().next().value
+    if (oldest) peers.delete(oldest)
+  })
 }
 
 function reconnectManualPeers(torrent: any): void {

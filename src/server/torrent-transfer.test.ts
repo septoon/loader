@@ -27,7 +27,12 @@ test('torrent metadata восстанавливается через shared runt
 
 test('при ожидании данных повторный поиск пиров обновляет tracker announce', () => {
   const updates: unknown[] = []
+  const removed: string[] = []
+  const added: string[] = []
   refreshTorrentPeers({
+    loaderDiscoveredPeers: new Set(['peer-1', 'peer-2']),
+    removePeer: (peer: string) => removed.push(peer),
+    addPeer: (peer: string) => added.push(peer),
     discovery: {
       tracker: {
         update: (options: unknown) => updates.push(options),
@@ -35,6 +40,8 @@ test('при ожидании данных повторный поиск пир�
     },
   })
 
+  assert.deepEqual(removed, ['peer-1', 'peer-2'])
+  assert.deepEqual(added, ['peer-1', 'peer-2'])
   assert.deepEqual(updates, [{ numwant: 50 }])
   assert.doesNotThrow(() => refreshTorrentPeers({}))
 })

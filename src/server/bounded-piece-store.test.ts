@@ -12,11 +12,18 @@ test('bounded cache keeps the active read window selected when full', async () =
   await writeFile(stalePiece, Buffer.alloc(8, 9))
   const deselections: Array<[number, number]> = []
   const selections: Array<[number, number]> = []
+  const selectionCalls: string[] = []
   const torrent = {
     pieces: Array.from({ length: 20 }),
     bitfield: { get: () => false },
-    _deselect: (start: number, end: number) => deselections.push([start, end]),
-    _select: (start: number, end: number) => selections.push([start, end]),
+    _deselect: (start: number, end: number) => {
+      deselections.push([start, end])
+      selectionCalls.push(`deselect:${start}-${end}`)
+    },
+    _select: (start: number, end: number) => {
+      selections.push([start, end])
+      selectionCalls.push(`select:${start}-${end}`)
+    },
   }
   const store = new BoundedPieceStore(8, {
     cachePath: root,
@@ -36,6 +43,7 @@ test('bounded cache keeps the active read window selected when full', async () =
 
     assert.deepEqual(deselections.at(-1), [0, 19])
     assert.deepEqual(selections.at(-1), [0, 1])
+    assert.deepEqual(selectionCalls.slice(-2), ['select:0-1', 'deselect:0-19'])
 
     store.setReadCursor(1)
     assert.deepEqual(selections.at(-1), [1, 2])

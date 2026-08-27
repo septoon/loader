@@ -218,8 +218,11 @@ export class BoundedPieceStore {
     if (!this.torrent?.pieces?.length) return
     const lastPiece = this.torrent.pieces.length - 1
     const windowEnd = Math.min(lastPiece, this.readCursor + this.headroomPieces)
-    this.torrent._deselect?.(0, lastPiece, true)
+    // Keep the torrent interested while replacing the iterator's full-file
+    // selection. Deselecting first makes peers see a transient uninterested
+    // state and they can disconnect before the bounded window is installed.
     this.torrent._select?.(this.readCursor, windowEnd, 1, null, true)
+    this.torrent._deselect?.(0, lastPiece, true)
   }
 
   private async evictFarthestAfter(index: number): Promise<boolean> {

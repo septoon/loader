@@ -119,8 +119,10 @@ export class TorrentTransfer {
       this.database.updateJob(jobId, { status: 'verifying', progress: null, speedBytesPerSecond: 0 })
       this.database.addEvent(jobId, 'info', `Проверяется источник: ${file.relativePath}`)
       this.notify()
-      digests = await hashTorrentFile(torrent, torrentFile, signal)
-      file = this.database.updateJobFile(file.id, { ...digests, status: 'pending' })
+      const progress = createProgressReporter(jobId, file.id, 0, this.database, this.notify)
+      digests = await hashTorrentFile(torrent, torrentFile, signal, progress, this.config.torrentMetadataTimeoutMs)
+      file = this.database.updateJobFile(file.id, { ...digests, status: 'pending', bytesTransferred: 0 })
+      this.updateAggregate(jobId, 0)
     }
 
     const existing = await this.storage.getMetadataOrNull(file.destinationPath)
@@ -164,7 +166,7 @@ export class TorrentTransfer {
 
       const progress = createProgressReporter(jobId, file.id, offset, this.database, this.notify)
       const body = Readable.from(
-        readTorrentFile(torrent, torrentFile, offset, signal, progress),
+        readTorrentFile(torrent, torrentFile, offset, signal, progress, this.config.torrentMetadataTimeoutMs),
         { objectMode: false, highWaterMark: 256 * 1024 },
       )
       try {
@@ -258,10 +260,16 @@ async function openTorrent(
   })
 }
 
-async function hashTorrentFile(torrent: any, file: any, signal: AbortSignal): Promise<FileDigests> {
+async function hashTorrentFile(
+  torrent: any,
+  file: any,
+  signal: AbortSignal,
+  onProgress: (bytes: number) => void,
+  inactivityTimeoutMs: number,
+): Promise<FileDigests> {
   const md5 = createHash('md5')
   const sha256 = createHash('sha256')
-  for await (const chunk of readTorrentFile(torrent, file, 0, signal)) {
+  for await (const chunk of readTorrentFile(torrent, file, 0, signal, onProgress, inactivityTimeoutMs)) {
     md5.update(chunk)
     sha256.update(chunk)
   }
@@ -274,6 +282,7 @@ async function * readTorrentFile(
   start: number,
   signal: AbortSignal,
   onProgress?: (bytes: number) => void,
+  inactivityTimeoutMs?: number,
 ): AsyncGenerator<Buffer> {
   const store = torrent.store?.store ?? torrent.store
   const pieceStore: BoundedPieceStore | undefined = torrent.loaderPieceStore ?? store?.loaderPieceStore ?? store
@@ -285,7 +294,7 @@ async function * readTorrentFile(
   let releasePiece: number | null = null
   try {
     while (true) {
-      const next = await nextWithAbort(iterator, signal)
+      const next = await nextWithAbort(iterator, signal, inactivityTimeoutMs)
       if (next.done) break
       signal.throwIfAborted()
       if (releasePiece !== null) await pieceStore?.release?.(releasePiece)
@@ -296,6 +305,9 @@ async function * readTorrentFile(
       offset += chunk.byteLength
       onProgress?.(offset)
       yield chunk
+    }
+    if (offset !== Number(file.length)) {
+      throw new Error(`Источник торрента завершился раньше ожидаемого: ${formatBytes(offset)} из ${formatBytes(Number(file.length))}`)
     }
   } finally {
     if (releasePiece !== null) await pieceStore?.release?.(releasePiece)
@@ -314,22 +326,38 @@ function reconnectManualPeers(torrent: any): void {
   }
 }
 
-async function nextWithAbort(iterator: AsyncIterator<Uint8Array>, signal: AbortSignal): Promise<IteratorResult<Uint8Array>> {
+async function nextWithAbort(
+  iterator: AsyncIterator<Uint8Array>,
+  signal: AbortSignal,
+  inactivityTimeoutMs?: number,
+): Promise<IteratorResult<Uint8Array>> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
-    const abort = () => {
+    let timeout: NodeJS.Timeout | null = null
+    const cleanup = () => {
       signal.removeEventListener('abort', abort)
+      if (timeout) clearTimeout(timeout)
+    }
+    const abort = () => {
+      cleanup()
       void iterator.return?.()
       reject(signal.reason instanceof Error ? signal.reason : new Error('Загрузка остановлена'))
     }
     signal.addEventListener('abort', abort, { once: true })
+    if (inactivityTimeoutMs) {
+      timeout = setTimeout(() => {
+        cleanup()
+        void iterator.return?.()
+        reject(new Error('Данные торрента не поступают: нет доступных раздающих пиров'))
+      }, inactivityTimeoutMs)
+    }
     iterator.next().then(
       (result) => {
-        signal.removeEventListener('abort', abort)
+        cleanup()
         resolve(result)
       },
       (error) => {
-        signal.removeEventListener('abort', abort)
+        cleanup()
         reject(error)
       },
     )

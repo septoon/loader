@@ -1,5 +1,36 @@
 # Progress
 
+## 2026-08-27 — диагностика зависшей пользовательской torrent-задачи
+
+На production подтверждены две независимые причины наблюдаемого поведения:
+
+- `BoundedPieceStore` при заполнении 128-МиБ cache полностью снимал torrent selection. Если нужная reader-у piece ещё не пришла, reader ждал её, но WebTorrent уже не мог её запросить. У пользовательской задачи cache заполнился удалёнными pieces, hash-pass оставался без видимого прогресса и заблокировал следующую задачу в однопоточной очереди.
+- Web client добавлял `Content-Type: application/json` к пустым `POST /pause` и `DELETE` запросам. Fastify возвращал `400 Body cannot be empty when content-type is set to application/json` до вызова pause/cancel handler.
+
+Локальный hotfix:
+
+- при заполнении cache сохраняет выбранным текущее read-window и переставляет его при продвижении cursor;
+- hash-pass записывает реальный progress/speed вместо вечных `0 Б`;
+- ожидание следующей piece ограничено тем же 10-минутным inactivity timeout, после которого задача освобождает очередь с понятной ошибкой об отсутствии раздающих пиров;
+- раннее завершение torrent iterator больше не может молча дать digest неполного файла;
+- JSON `Content-Type` ставится только при наличии тела запроса, поэтому pause/cancel доходят до API.
+
+Проверка локального hotfix:
+
+```bash
+npm run typecheck
+npm run build
+npm test
+npm run poc:torrent
+```
+
+- TypeScript и production build: passed.
+- 10 tests passed, включая regression на активное read-window заполненного cache и пустые pause/cancel запросы.
+- 256 МиБ bounded PoC: passed; SHA-256 совпал, peak cache 7 МиБ при лимите 24 МиБ, forced disconnect/retry завершён.
+- Production пока остаётся на `efcd8b0`: commit/push/deploy требуют отдельного явного разрешения пользователя.
+
+Для общего доступа VLC проверен вариант `rclone serve sftp` поверх Yandex backend: read-only каталог `/Media`, без полного staging и с единым SFTP-подключением в VLC. Это fallback, потому что медиабайты пойдут через VPS; прямой WebDAV Yandex сейчас не является надёжным общим знаменателем для стабильных VLC на iOS/tvOS/Android.
+
 ## 2026-08-27 — production torrent/magnet, восстановление и финальный UI
 
 Production-контур теперь принимает прямые HTTP(S) URL, magnet и `.torrent`; очередь, checkpoints и состав файлов переживают закрытие браузера и рестарт процесса.

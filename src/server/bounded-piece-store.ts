@@ -62,6 +62,7 @@ export class BoundedPieceStore {
 
   setReadCursor(index: number): void {
     this.readCursor = index
+    if (this.capacityPaused) this.selectReadWindow()
     void this.drain()
   }
 
@@ -210,7 +211,7 @@ export class BoundedPieceStore {
   private pauseSelection(): void {
     if (this.capacityPaused || !this.torrent?.pieces?.length) return
     this.capacityPaused = true
-    this.torrent._deselect?.(0, this.torrent.pieces.length - 1, true)
+    this.selectReadWindow()
   }
 
   private resumeSelectionIfSafe(): void {
@@ -218,6 +219,14 @@ export class BoundedPieceStore {
     if (this.usedBytes > this.maxBytes - (2 * this.chunkLength)) return
     this.capacityPaused = false
     this.torrent._select?.(this.readCursor, this.torrent.pieces.length - 1, 1, null, true)
+  }
+
+  private selectReadWindow(): void {
+    if (!this.torrent?.pieces?.length) return
+    const lastPiece = this.torrent.pieces.length - 1
+    const windowEnd = Math.min(lastPiece, this.readCursor + this.headroomPieces)
+    this.torrent._deselect?.(0, lastPiece, true)
+    this.torrent._select?.(this.readCursor, windowEnd, 1, null, true)
   }
 
   private async evictFarthestAfter(index: number): Promise<boolean> {

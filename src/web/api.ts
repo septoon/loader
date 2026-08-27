@@ -69,7 +69,7 @@ async function request<T = unknown>(url: string, init: RequestInit = {}): Promis
     ...init,
     credentials: 'same-origin',
   }
-  if (!(init.body instanceof FormData)) {
+  if (init.body != null && !(init.body instanceof FormData)) {
     const headers = new Headers(init.headers)
     headers.set('Content-Type', 'application/json')
     requestInit.headers = headers

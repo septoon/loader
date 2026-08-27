@@ -24,6 +24,13 @@
   - [ ] Добавить backup/retention и расширенную observability.
 - [x] Выполнить deploy и public health/auth/static/SSE smoke после разрешения пользователя.
 - [x] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
+- [ ] Выпустить production hotfix torrent cache после подтверждения пользователя:
+  - [x] Не снимать selection активного read-window при заполнении bounded cache.
+  - [x] Показывать фактический прогресс и скорость hash-pass.
+  - [x] Завершать задачу понятной ошибкой после тайм-аута отсутствия torrent data.
+  - [x] Не отправлять `Content-Type: application/json` у пустых pause/cancel запросов.
+  - [ ] Commit/push/deploy и проверка текущей пользовательской задачи на production.
+- [ ] После отдельного согласования добавить единый read-only доступ к `/Media` для VLC; основной кандидат для текущих стабильных клиентов — SFTP bridge к Yandex Disk без дискового staging на VPS.
 
 ## Критерий выбора транспорта
 

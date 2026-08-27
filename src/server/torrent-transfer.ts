@@ -280,13 +280,16 @@ async function * readTorrentFile(
   const firstPiece = Math.floor((Number(file.offset) + start) / Number(torrent.pieceLength))
   pieceStore?.setReadCursor?.(firstPiece)
   const iterator = file[Symbol.asyncIterator]({ start })
+  reconnectManualPeers(torrent)
   let offset = start
   let releasePiece: number | null = null
   try {
-    for await (const value of iterator) {
+    while (true) {
+      const next = await nextWithAbort(iterator, signal)
+      if (next.done) break
       signal.throwIfAborted()
       if (releasePiece !== null) await pieceStore?.release?.(releasePiece)
-      const chunk = Buffer.from(value)
+      const chunk = Buffer.from(next.value)
       const piece = Math.floor((Number(file.offset) + offset) / Number(torrent.pieceLength))
       pieceStore?.setReadCursor?.(piece)
       releasePiece = piece
@@ -298,6 +301,38 @@ async function * readTorrentFile(
     if (releasePiece !== null) await pieceStore?.release?.(releasePiece)
     await iterator.return?.()
   }
+}
+
+function reconnectManualPeers(torrent: any): void {
+  for (const peer of torrent.peerAddresses ?? []) {
+    try {
+      torrent.addPeer(peer)
+    } catch {
+      // Discovery keeps running; a duplicate or stale explicit peer is harmless.
+    }
+  }
+}
+
+async function nextWithAbort(iterator: AsyncIterator<Uint8Array>, signal: AbortSignal): Promise<IteratorResult<Uint8Array>> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener('abort', abort)
+      void iterator.return?.()
+      reject(signal.reason instanceof Error ? signal.reason : new Error('Загрузка остановлена'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    iterator.next().then(
+      (result) => {
+        signal.removeEventListener('abort', abort)
+        resolve(result)
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      },
+    )
+  })
 }
 
 function createProgressReporter(

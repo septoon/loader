@@ -6,19 +6,19 @@ Production-контур реализован: Fastify API/SSE, signed single-use
 
 # Last completed step
 
-`npm run typecheck`, `npm run build`, 8 tests и 256 MiB bounded torrent PoC проходят. Browser QA: `1440x900` и `390x844`, вход, magnet analysis, status modal, tabs, без overflow и console errors.
+Release `7acde0f` опубликован на `https://loader.lumastack.ru`. Public health/auth/jobs/SSE/static smoke прошёл; PM2 `loader` online без рестартов. TLS действует до `2026-11-25` с автоматическим обновлением. `npm run typecheck`, `npm run build`, 8 tests и 256 MiB bounded torrent PoC проходят; browser QA выполнен на desktop/mobile.
 
 # Current blocker
 
-Блокера реализации нет. Deployment временно заблокирован внешней связью: GitHub, Lumastack MCP, HTTPS и SSH banner синхронно перестали отвечать. На Mac default route идёт через подключённый `Happ` VPN (`utun6`); менять или перезапускать VPN без пользователя нельзя. На VPS в этом состоянии ничего не изменено.
+Deployment-блокера нет. GitHub, VPS release, PM2, nginx и TLS синхронизированы. Временное sudo-правило и upload-артефакты удалены.
 
-После восстановления связи остаётся live-E2E риск production glue: безопасный legal torrent нужно реально передать на Яндекс Диск, оборвать процесс и подтвердить восстановление после рестарта.
+Остаётся live-E2E риск production glue: безопасный legal torrent нужно реально передать на Яндекс Диск, оборвать процесс и подтвердить восстановление после рестарта.
 
 Для direct remote import остаётся crash-window между получением operation URL от Яндекс и её сохранением в SQLite. Нужен реальный restart test незавершённой operation и idempotent recovery policy. Активную remote-import operation подтверждённым Disk API сейчас нельзя безопасно pause/cancel; UI это не имитирует.
 
 # Next action
 
-Повторить `gh repo create/push` и Lumastack MCP health. Затем загрузить подготовленный release, установить отдельный Node 22, подключить shared runtime secrets, запустить `loader` через PM2, настроить nginx/TLS и проверить public health/auth/static. После этого на отдельном безопасном target провести live torrent transfer + kill/restart recovery и удалить тестовый файл после явного разрешения.
+На безопасном legal target провести live torrent transfer + kill/restart recovery и удалить тестовый файл только после явного разрешения. Отдельно закрыть crash-window direct remote import до записи operation URL и определить backup/retention для SQLite/shared runtime.
 
 # Relevant files
 

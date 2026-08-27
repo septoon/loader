@@ -19,8 +19,10 @@
   - [x] SSRF/path/file-name validation и скрытие query source из UI/logs.
   - [x] Подключить magnet/`.torrent` к bounded WebTorrent source и Yandex streaming uploader.
   - [ ] Проверить restart recovery реальной незавершённой операции и закрыть crash-window до записи operation URL.
-  - [ ] Добавить production topology, process supervision, backup/retention и observability после VPS audit.
-- [ ] Провести production E2E и только после разрешения пользователя выполнить deploy.
+  - [x] Добавить release/shared-runtime topology, отдельный Node 22 и PM2 supervision после VPS audit.
+  - [ ] Добавить backup/retention и расширенную observability.
+- [x] Выполнить deploy и public health/auth/static/SSE smoke после разрешения пользователя.
+- [ ] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
 
 ## Критерий выбора транспорта
 

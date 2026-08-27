@@ -50,10 +50,14 @@ npm audit --omit=dev
 
 ### Git и deployment state
 
-- Локальный Git создан, secrets/runtime исключены. Коммиты: `301f51e` и `a766ed2`.
-- Production archive `/tmp/loader-release-a766ed2.tgz`: `179746` bytes, SHA-256 `20eef4736b812e6f57962318dfefb9dbe96511e5c7987fce6f3e2000cbd71e99`.
+- Репозиторий опубликован: `https://github.com/septoon/loader`, ветка `main`, HEAD `7acde0f`. Secrets/runtime исключены.
+- Production archive `/tmp/loader-release-7acde0f.tgz`: `179390` bytes, SHA-256 `02fecd1a293b8e8f604f736b720226e40602fca6a6c80fe61cfa35f6d3ebc001`.
 - Production password/session secret созданы локально в ignored `runtime/secrets/` с `0600`; Yandex token также остаётся только в ignored secret file.
-- GitHub repo/push и VPS deploy не завершены: одновременно перестали отвечать GitHub TLS, Lumastack MCP и HTTP/TLS/SSH application handshakes. TCP connect к VPS проходил, но server response/banner не приходил. После нескольких независимых повторов mutation на VPS не выполнялась.
+- Release развернут в `/home/deploy/loader/releases/7acde0f`, shared runtime подключён через symlink, зависимости установлены отдельным Node `v22.23.2`, WebTorrent подтверждён как `3.0.21`.
+- PM2-процесс `loader` online без рестартов; локальный health на `127.0.0.1:8787` возвращает `storageConfigured: true`, `torrentAvailable: true`, `activeTransfers: 0`.
+- `https://loader.lumastack.ru` опубликован через отдельный nginx vhost с отключённым buffering для SSE и proxy на `127.0.0.1:8787`. Let's Encrypt certificate действителен до `2026-11-25`, auto-renew включён.
+- Public smoke: health `ok`, authenticated session `200`, session cookie подтверждена, `/api/jobs` возвращает пустую очередь, SSE отдаёт initial snapshot, JS/CSS отвечают `200`.
+- Временные upload-артефакты и ограниченное sudo-правило удалены после deploy. Свободно `2.3G`, Loader использует около `106 MiB` RAM, PM2 restarts: `0`.
 
 ## 2026-08-26 — реальный Yandex Disk transport подтверждён
 

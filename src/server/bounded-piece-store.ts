@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readdir, rename, rm, stat, statfs, unlink } from 'node:fs/promises'
+import { mkdir, open, rename, rm, statfs, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 type Callback = (error: Error | null, buffer?: Buffer) => void
@@ -131,17 +131,10 @@ export class BoundedPieceStore {
   }
 
   private async initialize(): Promise<void> {
+    // A new WebTorrent instance has an empty bitfield and cannot trust cache
+    // files left by a crashed process without re-validating every piece.
+    await rm(this.root, { recursive: true, force: true })
     await mkdir(this.root, { recursive: true, mode: 0o700 })
-    const entries = await readdir(this.root, { withFileTypes: true })
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.piece')) continue
-      const index = Number.parseInt(entry.name.slice(0, -6), 10)
-      if (!Number.isInteger(index)) continue
-      const info = await stat(path.join(this.root, entry.name))
-      this.sizes.set(index, info.size)
-      this.usedBytes += info.size
-    }
-    this.peakBytes = this.usedBytes
   }
 
   private async drain(): Promise<void> {

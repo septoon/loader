@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -7,6 +7,9 @@ import { BoundedPieceStore } from './bounded-piece-store.js'
 
 test('bounded cache keeps the active read window selected when full', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'loader-piece-store-'))
+  const stalePiece = path.join(root, '0000000000.piece')
+  await mkdir(root, { recursive: true })
+  await writeFile(stalePiece, Buffer.alloc(8, 9))
   const deselections: Array<[number, number]> = []
   const selections: Array<[number, number]> = []
   const torrent = {
@@ -26,6 +29,7 @@ test('bounded cache keeps the active read window selected when full', async () =
 
   try {
     await store.ready
+    await assert.rejects(access(stalePiece))
     await put(store, 5)
     await put(store, 6)
     await put(store, 7)

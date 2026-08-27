@@ -9,7 +9,7 @@
 - [x] Проверить большой streaming upload без полного staging.
 - [x] Принудительно оборвать соединение и подтвердить resume через `HEAD` server offset и `Content-Range`.
 - [x] Сверить удалённые `size` и `md5`, локально вычислить SHA-256.
-- [ ] Проверить восстановление upload после полного рестарта worker с persistent checkpoint.
+- [x] Проверить восстановление torrent upload после полного рестарта worker с persistent checkpoint.
 - [x] Проверить официальный remote import по прямому HTTP URL и polling операции.
 - [x] По результатам тестов выбрать окончательную транспортную архитектуру.
 - [ ] Завершить production jobs, API, PWA UI, безопасность и эксплуатационный контур:
@@ -18,11 +18,12 @@
   - [x] Адаптивный русскоязычный React/Vite PWA UI для очереди и direct URL.
   - [x] SSRF/path/file-name validation и скрытие query source из UI/logs.
   - [x] Подключить magnet/`.torrent` к bounded WebTorrent source и Yandex streaming uploader.
-  - [ ] Проверить restart recovery реальной незавершённой операции и закрыть crash-window до записи operation URL.
+  - [x] Проверить restart recovery реальной незавершённой torrent-операции.
+  - [ ] Закрыть crash-window direct remote import до записи operation URL.
   - [x] Добавить release/shared-runtime topology, отдельный Node 22 и PM2 supervision после VPS audit.
   - [ ] Добавить backup/retention и расширенную observability.
 - [x] Выполнить deploy и public health/auth/static/SSE smoke после разрешения пользователя.
-- [ ] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
+- [x] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
 
 ## Критерий выбора транспорта
 

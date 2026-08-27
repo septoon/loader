@@ -50,14 +50,23 @@ npm audit --omit=dev
 
 ### Git и deployment state
 
-- Репозиторий опубликован: `https://github.com/septoon/loader`, ветка `main`, HEAD `7acde0f`. Secrets/runtime исключены.
-- Production archive `/tmp/loader-release-7acde0f.tgz`: `179390` bytes, SHA-256 `02fecd1a293b8e8f604f736b720226e40602fca6a6c80fe61cfa35f6d3ebc001`.
+- Репозиторий опубликован: `https://github.com/septoon/loader`, ветка `main`. Secrets/runtime исключены.
+- Активный production release: `65fa83f`; archive `/tmp/loader-release-65fa83f.tgz`: `179935` bytes, SHA-256 `ac8097ba11ad040bc27a57d4be8ee54bf3d06bfd595a30a92f7082a75ed22015`.
 - Production password/session secret созданы локально в ignored `runtime/secrets/` с `0600`; Yandex token также остаётся только в ignored secret file.
-- Release развернут в `/home/deploy/loader/releases/7acde0f`, shared runtime подключён через symlink, зависимости установлены отдельным Node `v22.23.2`, WebTorrent подтверждён как `3.0.21`.
-- PM2-процесс `loader` online без рестартов; локальный health на `127.0.0.1:8787` возвращает `storageConfigured: true`, `torrentAvailable: true`, `activeTransfers: 0`.
+- Release развернут в `/home/deploy/loader/releases/65fa83f`, shared runtime подключён через symlink, зависимости установлены отдельным Node `v22.23.2`, WebTorrent подтверждён как `3.0.21`.
+- PM2-процесс `loader` online; локальный/public health возвращает `storageConfigured: true`, `torrentAvailable: true`, `activeTransfers: 0`. PM2 restart count включает контролируемые restart recovery тесты.
 - `https://loader.lumastack.ru` опубликован через отдельный nginx vhost с отключённым buffering для SSE и proxy на `127.0.0.1:8787`. Let's Encrypt certificate действителен до `2026-11-25`, auto-renew включён.
 - Public smoke: health `ok`, authenticated session `200`, session cookie подтверждена, `/api/jobs` возвращает пустую очередь, SSE отдаёт initial snapshot, JS/CSS отвечают `200`.
-- Временные upload-артефакты и ограниченное sudo-правило удалены после deploy. Свободно `2.3G`, Loader использует около `106 MiB` RAM, PM2 restarts: `0`.
+- Временные upload-артефакты и ограниченное sudo-правило удалены после deploy. Старый `7acde0f` удалён; оставлены текущий `65fa83f` и один rollback `5a7a0d1`. После E2E свободно `2.2G`, Loader использует около `97 MiB` RAM.
+
+### Production torrent restart E2E
+
+- Синтетический легальный `.mp4` размером `16 MiB` передан magnet-задачей `4995d49e-776c-42ea-ac94-7dc891c4a20c` в `/Media/Movies/loader-e2e-restart.mp4`.
+- E2E обнаружил два production edge case: зависание ожидания piece при cancel и необходимость повторно подключать explicit `x.pe` после metadata. Исправления: abort-aware iterator и reconnect explicit peer (`5a7a0d1`, `65fa83f`).
+- Worker принудительно перезапущен во время передачи. Та же задача сохранила hashes/upload URL, получила server-authoritative offset `1.4 MiB`, продолжила работу и завершилась `completed`.
+- Итог: `16,777,216` bytes; MD5 `2c7ab85a893283e98c931e9511add182`; SHA-256 `080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e`. Yandex metadata совпала.
+- Официальный временный download URL вернул `206`, `Content-Range: bytes 0-31/16777216` и 32 bytes с `downloader.disk.yandex.ru`; VLC data path подтверждён без proxy VPS.
+- Неуспешные синтетические job records и локальный seeder workspace удалены. Удалённый успешный test file оставлен на Яндекс Диске, поскольку удаление не было отдельно разрешено.
 
 ## 2026-08-26 — реальный Yandex Disk transport подтверждён
 

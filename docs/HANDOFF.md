@@ -6,19 +6,17 @@ Production-контур реализован: Fastify API/SSE, signed single-use
 
 # Last completed step
 
-Release `7acde0f` опубликован на `https://loader.lumastack.ru`. Public health/auth/jobs/SSE/static smoke прошёл; PM2 `loader` online без рестартов. TLS действует до `2026-11-25` с автоматическим обновлением. `npm run typecheck`, `npm run build`, 8 tests и 256 MiB bounded torrent PoC проходят; browser QA выполнен на desktop/mobile.
+Release `65fa83f` опубликован на `https://loader.lumastack.ru`. Public health/auth/jobs/SSE/static smoke прошёл. Синтетический 16 MiB production magnet E2E завершился после контролируемых PM2 restart с тем же job/upload checkpoint; Yandex metadata и HTTP Range для VLC подтверждены. TLS действует до `2026-11-25` с автоматическим обновлением. `npm run typecheck`, `npm run build`, 8 tests и 256 MiB bounded torrent PoC проходят; browser QA выполнен на desktop/mobile.
 
 # Current blocker
 
-Deployment-блокера нет. GitHub, VPS release, PM2, nginx и TLS синхронизированы. Временное sudo-правило и upload-артефакты удалены.
-
-Остаётся live-E2E риск production glue: безопасный legal torrent нужно реально передать на Яндекс Диск, оборвать процесс и подтвердить восстановление после рестарта.
+Deployment-блокера и torrent live-E2E риска нет. GitHub, VPS release, PM2, nginx и TLS синхронизированы. Временное sudo-правило, upload-артефакты, failed/cancelled synthetic jobs и локальный seeder удалены.
 
 Для direct remote import остаётся crash-window между получением operation URL от Яндекс и её сохранением в SQLite. Нужен реальный restart test незавершённой operation и idempotent recovery policy. Активную remote-import operation подтверждённым Disk API сейчас нельзя безопасно pause/cancel; UI это не имитирует.
 
 # Next action
 
-На безопасном legal target провести live torrent transfer + kill/restart recovery и удалить тестовый файл только после явного разрешения. Отдельно закрыть crash-window direct remote import до записи operation URL и определить backup/retention для SQLite/shared runtime.
+Закрыть crash-window direct remote import до записи operation URL и определить backup/retention для SQLite/shared runtime. Удалить `/Media/Movies/loader-e2e-restart.mp4` только после явного разрешения пользователя.
 
 # Relevant files
 

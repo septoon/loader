@@ -306,6 +306,7 @@ async function * readTorrentFile(
 function reconnectManualPeers(torrent: any): void {
   for (const peer of torrent.peerAddresses ?? []) {
     try {
+      torrent.removePeer(peer)
       torrent.addPeer(peer)
     } catch {
       // Discovery keeps running; a duplicate or stale explicit peer is harmless.

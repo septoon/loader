@@ -20,6 +20,8 @@ Cache ограничивается по bytes, резерву свободног
 
 Реализация использует private WebTorrent API `_markUnverified`, `_deselect` и `_select`; версия `3.0.21` зафиксирована. Обновлять её можно только после повторного bounded contract test или перехода на поддерживаемый extension point.
 
+Если активный reader 30 секунд не получает следующую piece, worker вызывает публичный `bittorrent-tracker` client `update()` через discovery WebTorrent. Это сокращает 15-минутное штатное ожидание повторного announce после исчерпания reconnect-попыток; общий inactivity timeout остаётся защитой от раздачи без доступных пиров.
+
 ## D-004 — Yandex resume использует server-authoritative HEAD offset
 
 **Статус:** принято и подтверждено реальным API.

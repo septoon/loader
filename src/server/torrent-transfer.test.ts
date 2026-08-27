@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readTorrentMetadata } from './torrent-transfer.js'
+import { readTorrentMetadata, refreshTorrentPeers } from './torrent-transfer.js'
 
 test('torrent metadata восстанавливается через shared runtime после смены release', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'loader-release-'))
@@ -23,4 +23,18 @@ test('torrent metadata восстанавливается через shared runt
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('при ожидании данных повторный поиск пиров обновляет tracker announce', () => {
+  const updates: unknown[] = []
+  refreshTorrentPeers({
+    discovery: {
+      tracker: {
+        update: (options: unknown) => updates.push(options),
+      },
+    },
+  })
+
+  assert.deepEqual(updates, [{ numwant: 50 }])
+  assert.doesNotThrow(() => refreshTorrentPeers({}))
 })

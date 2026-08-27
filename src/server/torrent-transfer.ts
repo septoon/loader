@@ -120,7 +120,17 @@ export class TorrentTransfer {
       this.database.addEvent(jobId, 'info', `Проверяется источник: ${file.relativePath}`)
       this.notify()
       const progress = createProgressReporter(jobId, file.id, 0, this.database, this.notify)
-      digests = await hashTorrentFile(torrent, torrentFile, signal, progress, this.config.torrentMetadataTimeoutMs)
+      digests = await hashTorrentFile(
+        torrent,
+        torrentFile,
+        signal,
+        progress,
+        this.config.torrentMetadataTimeoutMs,
+        () => {
+          this.updateAggregate(jobId, 0)
+          this.notify()
+        },
+      )
       file = this.database.updateJobFile(file.id, { ...digests, status: 'pending', bytesTransferred: 0 })
       this.updateAggregate(jobId, 0)
     }
@@ -166,7 +176,18 @@ export class TorrentTransfer {
 
       const progress = createProgressReporter(jobId, file.id, offset, this.database, this.notify)
       const body = Readable.from(
-        readTorrentFile(torrent, torrentFile, offset, signal, progress, this.config.torrentMetadataTimeoutMs),
+        readTorrentFile(
+          torrent,
+          torrentFile,
+          offset,
+          signal,
+          progress,
+          this.config.torrentMetadataTimeoutMs,
+          () => {
+            this.updateAggregate(jobId, 0)
+            this.notify()
+          },
+        ),
         { objectMode: false, highWaterMark: 256 * 1024 },
       )
       try {
@@ -270,10 +291,11 @@ async function hashTorrentFile(
   signal: AbortSignal,
   onProgress: (bytes: number) => void,
   inactivityTimeoutMs: number,
+  onInactive?: () => void,
 ): Promise<FileDigests> {
   const md5 = createHash('md5')
   const sha256 = createHash('sha256')
-  for await (const chunk of readTorrentFile(torrent, file, 0, signal, onProgress, inactivityTimeoutMs)) {
+  for await (const chunk of readTorrentFile(torrent, file, 0, signal, onProgress, inactivityTimeoutMs, onInactive)) {
     md5.update(chunk)
     sha256.update(chunk)
   }
@@ -287,6 +309,7 @@ async function * readTorrentFile(
   signal: AbortSignal,
   onProgress?: (bytes: number) => void,
   inactivityTimeoutMs?: number,
+  onInactive?: () => void,
 ): AsyncGenerator<Buffer> {
   const store = torrent.store?.store ?? torrent.store
   const pieceStore: BoundedPieceStore | undefined = torrent.loaderPieceStore ?? store?.loaderPieceStore ?? store
@@ -294,11 +317,15 @@ async function * readTorrentFile(
   pieceStore?.setReadCursor?.(firstPiece)
   const iterator = file[Symbol.asyncIterator]({ start })
   reconnectManualPeers(torrent)
+  const refreshPeers = () => {
+    refreshTorrentPeers(torrent)
+    onInactive?.()
+  }
   let offset = start
   let releasePiece: number | null = null
   try {
     while (true) {
-      const next = await nextWithAbort(iterator, signal, inactivityTimeoutMs)
+      const next = await nextWithAbort(iterator, signal, inactivityTimeoutMs, refreshPeers)
       if (next.done) break
       signal.throwIfAborted()
       if (releasePiece !== null) await pieceStore?.release?.(releasePiece)
@@ -319,6 +346,14 @@ async function * readTorrentFile(
   }
 }
 
+export function refreshTorrentPeers(torrent: any): void {
+  try {
+    torrent.discovery?.tracker?.update?.({ numwant: 50 })
+  } catch {
+    // The normal discovery interval and inactivity timeout remain active.
+  }
+}
+
 function reconnectManualPeers(torrent: any): void {
   for (const peer of torrent.peerAddresses ?? []) {
     try {
@@ -334,13 +369,16 @@ async function nextWithAbort(
   iterator: AsyncIterator<Uint8Array>,
   signal: AbortSignal,
   inactivityTimeoutMs?: number,
+  onInactive?: () => void,
 ): Promise<IteratorResult<Uint8Array>> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
     let timeout: NodeJS.Timeout | null = null
+    let refreshInterval: NodeJS.Timeout | null = null
     const cleanup = () => {
       signal.removeEventListener('abort', abort)
       if (timeout) clearTimeout(timeout)
+      if (refreshInterval) clearInterval(refreshInterval)
     }
     const abort = () => {
       cleanup()
@@ -349,6 +387,8 @@ async function nextWithAbort(
     }
     signal.addEventListener('abort', abort, { once: true })
     if (inactivityTimeoutMs) {
+      const refreshIntervalMs = Math.min(30_000, Math.max(1_000, Math.floor(inactivityTimeoutMs / 2)))
+      if (onInactive) refreshInterval = setInterval(onInactive, refreshIntervalMs)
       timeout = setTimeout(() => {
         cleanup()
         void iterator.return?.()

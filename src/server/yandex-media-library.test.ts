@@ -45,3 +45,29 @@ test('медиатека отклоняет внешний download URL и trave
     globalThis.fetch = originalFetch
   }
 })
+
+test('медиатека запрашивает тип каталога вместе с пагинацией', async () => {
+  const originalFetch = globalThis.fetch
+  let fields = ''
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
+    fields = url.searchParams.get('fields') || ''
+    return Response.json({
+      type: 'dir',
+      path: 'disk:/Media',
+      _embedded: {
+        items: [{ name: 'Movies', path: 'disk:/Media/Movies', type: 'dir', modified: '2026-01-01T00:00:00Z' }],
+        limit: 1_000,
+        offset: 0,
+        total: 1,
+      },
+    })
+  }) as typeof fetch
+  try {
+    const resources = await new YandexMediaLibrary('x'.repeat(32)).listDirectory('/')
+    assert.deepEqual(resources.map((resource) => resource.name), ['Movies'])
+    assert.match(fields, /(^|,)type(,|$)/u)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

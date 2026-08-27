@@ -61,7 +61,7 @@ export class YandexMediaLibrary implements MediaLibrary {
     while (offset < total) {
       const value = await this.apiRequest<ResourceResponse>('/resources', {
         path,
-        fields: '_embedded.items.name,_embedded.items.path,_embedded.items.type,_embedded.items.size,_embedded.items.modified,_embedded.limit,_embedded.offset,_embedded.total',
+        fields: 'type,_embedded.items.name,_embedded.items.path,_embedded.items.type,_embedded.items.size,_embedded.items.modified,_embedded.limit,_embedded.offset,_embedded.total',
         limit: 1_000,
         offset,
       })

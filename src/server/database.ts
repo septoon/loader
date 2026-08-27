@@ -38,6 +38,7 @@ interface JobFileRow {
   md5: string | null
   sha256: string | null
   upload_href: string | null
+  source_checkpoint: string | null
   created_at: string
   updated_at: string
 }
@@ -55,6 +56,7 @@ export interface InternalJobFile extends JobFile {
   md5: string | null
   sha256: string | null
   uploadHref: string | null
+  sourceCheckpoint: string | null
 }
 
 export interface InternalJob extends Job {
@@ -68,7 +70,7 @@ type JobPatch = Partial<Pick<InternalJob,
   | 'bytesTransferred' | 'totalBytes' | 'speedBytesPerSecond' | 'errorMessage' | 'operationHref'>>
 
 type JobFilePatch = Partial<Pick<InternalJobFile,
-  'status' | 'bytesTransferred' | 'md5' | 'sha256' | 'uploadHref'>>
+  'status' | 'bytesTransferred' | 'md5' | 'sha256' | 'uploadHref' | 'sourceCheckpoint'>>
 
 export class JobDatabase {
   readonly #database: DatabaseSync
@@ -112,6 +114,7 @@ export class JobDatabase {
         md5 TEXT,
         sha256 TEXT,
         upload_href TEXT,
+        source_checkpoint TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(job_id, file_index)
@@ -125,6 +128,10 @@ export class JobDatabase {
         created_at TEXT NOT NULL
       ) STRICT;
     `)
+    const jobFileColumns = this.#database.prepare('PRAGMA table_info(job_files)').all() as Array<{ name: string }>
+    if (!jobFileColumns.some((column) => column.name === 'source_checkpoint')) {
+      this.#database.exec('ALTER TABLE job_files ADD COLUMN source_checkpoint TEXT')
+    }
     this.#getJobStatement = this.#database.prepare('SELECT * FROM jobs WHERE id = ?')
   }
 
@@ -229,6 +236,7 @@ export class JobDatabase {
     const values: Array<string | number | null> = []
     const mapping: Record<keyof JobFilePatch, string> = {
       status: 'status', bytesTransferred: 'bytes_transferred', md5: 'md5', sha256: 'sha256', uploadHref: 'upload_href',
+      sourceCheckpoint: 'source_checkpoint',
     }
     for (const [key, column] of Object.entries(mapping) as [keyof JobFilePatch, string][]) {
       if (Object.hasOwn(patch, key)) {
@@ -326,6 +334,7 @@ function toInternalFile(row: JobFileRow): InternalJobFile {
     id: row.id, jobId: row.job_id, index: row.file_index, relativePath: row.relative_path,
     destinationPath: row.destination_path, size: row.size, status: row.status,
     bytesTransferred: row.bytes_transferred, md5: row.md5, sha256: row.sha256, uploadHref: row.upload_href,
+    sourceCheckpoint: row.source_checkpoint,
   }
 }
 

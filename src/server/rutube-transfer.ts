@@ -39,7 +39,7 @@ export class RutubeTransfer {
       const source = await resolveRutubeSource(job.source)
       controller.signal.throwIfAborted()
       let file = job.files[0]
-      let segmentSizes: Array<number | null> | null = null
+      let segmentSizes = file ? decodeSegmentSizes(file.sourceCheckpoint, source.segments.length, file.size) : null
 
       if (!file?.md5 || !file.sha256) {
         this.database.updateJob(job.id, {
@@ -64,6 +64,7 @@ export class RutubeTransfer {
           sha256: hashed.sha256,
           status: 'pending',
           bytesTransferred: 0,
+          sourceCheckpoint: encodeSegmentSizes(hashed.segmentSizes),
         })
         this.database.updateJob(job.id, {
           progress: 0, bytesTransferred: 0, totalBytes: hashed.size, speedBytesPerSecond: 0,
@@ -73,6 +74,21 @@ export class RutubeTransfer {
       }
       if (!file?.md5 || !file.sha256) throw new Error('Не удалось сохранить контрольные суммы Rutube')
       const digests: FileDigests = { md5: file.md5, sha256: file.sha256 }
+      if (!segmentSizes) {
+        this.database.updateJob(job.id, {
+          status: 'verifying', progress: null, bytesTransferred: 0, totalBytes: file.size,
+          speedBytesPerSecond: 0, errorMessage: null,
+        })
+        this.database.addEvent(job.id, 'info', 'Rutube: восстанавливается карта HLS-сегментов')
+        this.notify()
+        const progress = createJobProgressReporter(job.id, this.database, this.notify, file.size)
+        const rebuilt = await hashSegments(source.segments, job.source, controller.signal, progress)
+        if (rebuilt.size !== file.size || rebuilt.md5 !== digests.md5 || rebuilt.sha256 !== digests.sha256) {
+          throw new Error('Поток Rutube изменился после предыдущей проверки')
+        }
+        segmentSizes = rebuilt.segmentSizes
+        file = this.database.updateJobFile(file.id, { sourceCheckpoint: encodeSegmentSizes(rebuilt.segmentSizes) })
+      }
 
       if (file.status === 'completed') {
         const metadata = await this.storage.getMetadataOrNull(file.destinationPath)
@@ -105,10 +121,6 @@ export class RutubeTransfer {
           this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
         }
       }
-      if (!segmentSizes) {
-        segmentSizes = await readSegmentSizesForOffset(source.segments, job.source, offset, controller.signal)
-      }
-
       for (let attempt = 0; attempt < 4; attempt += 1) {
         controller.signal.throwIfAborted()
         if (!uploadHref) {
@@ -249,44 +261,6 @@ export async function * readSegments(
   if (base !== totalBytes) throw new Error(`Размер потока Rutube изменился: ${base}/${totalBytes}`)
 }
 
-async function readSegmentSizesForOffset(
-  segments: RutubeSegment[],
-  source: string,
-  offset: number,
-  signal: AbortSignal,
-): Promise<Array<number | null>> {
-  const sizes: Array<number | null> = Array(segments.length).fill(null)
-  let total = 0
-  let cursor = 0
-  while (cursor < segments.length && total < offset) {
-    const batch = segments.slice(cursor, cursor + 32)
-    const batchSizes = await Promise.all(batch.map((segment) => readSegmentSize(segment.url, source, signal)))
-    for (let index = 0; index < batchSizes.length; index += 1) {
-      const size = batchSizes[index]!
-      sizes[cursor + index] = size
-      total += size
-    }
-    cursor += batch.length
-  }
-  if (total < offset) throw new Error('Контрольная точка находится за пределами потока Rutube')
-  return sizes
-}
-
-async function readSegmentSize(url: string, source: string, signal: AbortSignal): Promise<number> {
-  const headers = rutubeRequestHeaders(source)
-  const response = await fetch(url, {
-    method: 'HEAD', headers, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-  })
-  const size = Number(response.headers.get('content-length'))
-  if (response.ok && Number.isSafeInteger(size) && size > 0) return size
-  const fallback = await fetchSegment(url, source, signal, 0)
-  const range = fallback.headers.get('content-range')
-  await fallback.body?.cancel()
-  const total = Number(range?.split('/').at(-1))
-  if (fallback.status === 206 && Number.isSafeInteger(total) && total > 0) return total
-  throw new Error('Rutube не вернул размер HLS-сегмента')
-}
-
 async function fetchSegment(url: string, source: string, signal: AbortSignal, offset?: number): Promise<Response> {
   let lastError: unknown
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -329,9 +303,14 @@ function createJobProgressReporter(
   jobId: string,
   database: JobDatabase,
   notify: () => void,
+  totalBytes?: number,
 ): (bytes: number) => void {
   return createProgressReporter((bytes, speed) => {
-    database.updateJob(jobId, { bytesTransferred: bytes, speedBytesPerSecond: speed })
+    database.updateJob(jobId, {
+      bytesTransferred: bytes,
+      speedBytesPerSecond: speed,
+      ...(totalBytes ? { progress: bytes / totalBytes, totalBytes } : {}),
+    })
     notify()
   })
 }
@@ -381,6 +360,24 @@ function assertTotalSize(sizes: number[], expected: number): void {
 function readResponseTotalSize(response: Response, ranged: boolean): number {
   if (ranged) return Number(response.headers.get('content-range')?.split('/').at(-1))
   return Number(response.headers.get('content-length'))
+}
+
+function encodeSegmentSizes(sizes: number[]): string {
+  assertTotalSize(sizes, sizes.reduce((sum, size) => sum + size, 0))
+  return JSON.stringify(sizes)
+}
+
+function decodeSegmentSizes(value: string | null, segmentCount: number, expectedTotal: number): number[] | null {
+  if (!value) return null
+  try {
+    const sizes = JSON.parse(value) as unknown
+    if (!Array.isArray(sizes) || sizes.length !== segmentCount
+      || sizes.some((size) => !Number.isSafeInteger(size) || size <= 0)) return null
+    const typed = sizes as number[]
+    return typed.reduce((sum, size) => sum + size, 0) === expectedTotal ? typed : null
+  } catch {
+    return null
+  }
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {

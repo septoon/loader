@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFile, rm } from 'node:fs/promises'
+import { readFile, realpath, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import WebTorrent from 'webtorrent'
@@ -211,13 +211,17 @@ export class TorrentTransfer {
 
   private async loadTorrentId(job: InternalJob): Promise<string | Buffer> {
     if (job.sourceKind === 'magnet') return job.source
-    const metadataPath = path.resolve(job.source)
-    const root = path.resolve(this.config.torrentMetadataDir)
-    if (!metadataPath.startsWith(`${root}${path.sep}`)) throw new Error('Путь .torrent находится вне защищённого каталога')
-    const value = await readFile(metadataPath)
-    if (value.byteLength > 4 * 1024 * 1024) throw new Error('.torrent превышает лимит 4 МиБ')
-    return value
+    return readTorrentMetadata(job.id, this.config.torrentMetadataDir)
   }
+}
+
+export async function readTorrentMetadata(jobId: string, metadataDirectory: string): Promise<Buffer> {
+  const root = await realpath(path.resolve(metadataDirectory))
+  const metadataPath = await realpath(path.join(root, `${jobId}.torrent`))
+  if (!metadataPath.startsWith(`${root}${path.sep}`)) throw new Error('Путь .torrent находится вне защищённого каталога')
+  const value = await readFile(metadataPath)
+  if (value.byteLength > 4 * 1024 * 1024) throw new Error('.torrent превышает лимит 4 МиБ')
+  return value
 }
 
 async function openTorrent(

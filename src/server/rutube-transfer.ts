@@ -257,10 +257,16 @@ async function readSegmentSizesForOffset(
 ): Promise<Array<number | null>> {
   const sizes: Array<number | null> = Array(segments.length).fill(null)
   let total = 0
-  for (let index = 0; index < segments.length && total < offset; index += 1) {
-    const size = await readSegmentSize(segments[index]!.url, source, signal)
-    sizes[index] = size
-    total += size
+  let cursor = 0
+  while (cursor < segments.length && total < offset) {
+    const batch = segments.slice(cursor, cursor + 32)
+    const batchSizes = await Promise.all(batch.map((segment) => readSegmentSize(segment.url, source, signal)))
+    for (let index = 0; index < batchSizes.length; index += 1) {
+      const size = batchSizes[index]!
+      sizes[cursor + index] = size
+      total += size
+    }
+    cursor += batch.length
   }
   if (total < offset) throw new Error('Контрольная точка находится за пределами потока Rutube')
   return sizes

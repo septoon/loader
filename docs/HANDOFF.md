@@ -6,11 +6,11 @@ Production-контур реализован: Fastify API/SSE, signed single-use
 
 # Last completed step
 
-Release `65fa83f` опубликован на `https://loader.lumastack.ru`. Public health/auth/jobs/SSE/static smoke прошёл. Синтетический 16 MiB production magnet E2E завершился после контролируемых PM2 restart с тем же job/upload checkpoint; Yandex metadata и HTTP Range для VLC подтверждены. TLS действует до `2026-11-25` с автоматическим обновлением. `npm run typecheck`, `npm run build`, 8 tests и 256 MiB bounded torrent PoC проходят; browser QA выполнен на desktop/mobile.
+Release `efcd8b0` опубликован на `https://loader.lumastack.ru`. Пользовательский арт подключён как PWA/Apple Touch icon, а iOS file picker больше не фильтрует `.torrent` через ненадёжное MIME/UTType-сопоставление; расширение и bencode проверяются после выбора. Public health, manifest, четыре PNG-размера и production bundle проверены. PM2 пересоздан с script path/cwd текущего release. `npm run typecheck`, `npm run build` и 8 tests проходят; предоставленный пользователем `.torrent` локально успешно разобран без вывода tracker/passkey.
 
 # Current blocker
 
-Deployment-блокера и torrent live-E2E риска нет. GitHub, VPS release, PM2, nginx и TLS синхронизированы. Временное sudo-правило, upload-артефакты, failed/cancelled synthetic jobs и локальный seeder удалены.
+Deployment-блокера и torrent live-E2E риска нет. GitHub code release, VPS, PM2, nginx и TLS синхронизированы; текущий release `efcd8b0`, rollback `65fa83f`. Временное sudo-правило, upload-артефакты, failed/cancelled synthetic jobs и локальный seeder удалены.
 
 Для direct remote import остаётся crash-window между получением operation URL от Яндекс и её сохранением в SQLite. Нужен реальный restart test незавершённой operation и idempotent recovery policy. Активную remote-import operation подтверждённым Disk API сейчас нельзя безопасно pause/cancel; UI это не имитирует.
 
@@ -35,6 +35,9 @@ Deployment-блокера и torrent live-E2E риска нет. GitHub, VPS rel
 - `src/web/components/JobsPanel.tsx`
 - `src/web/components/SourceComposer.tsx`
 - `src/web/styles.css`
+- `index.html`
+- `public/manifest.webmanifest`
+- `public/icons/`
 - `docs/design/loader-russian-concept.png`
 - `scripts/store-yandex-token.mjs`
 - `docs/PROJECT_CONTEXT.md`

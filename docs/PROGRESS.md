@@ -54,13 +54,13 @@ npm audit --omit=dev
 ### Git и deployment state
 
 - Репозиторий опубликован: `https://github.com/septoon/loader`, ветка `main`. Secrets/runtime исключены.
-- Активный production release: `65fa83f`; archive `/tmp/loader-release-65fa83f.tgz`: `179935` bytes, SHA-256 `ac8097ba11ad040bc27a57d4be8ee54bf3d06bfd595a30a92f7082a75ed22015`.
+- Активный production release: `efcd8b0`; release собран на VPS из публичного GitHub checkout с проверкой точного commit SHA.
 - Production password/session secret созданы локально в ignored `runtime/secrets/` с `0600`; Yandex token также остаётся только в ignored secret file.
-- Release развернут в `/home/deploy/loader/releases/65fa83f`, shared runtime подключён через symlink, зависимости установлены отдельным Node `v22.23.2`, WebTorrent подтверждён как `3.0.21`.
-- PM2-процесс `loader` online; локальный/public health возвращает `storageConfigured: true`, `torrentAvailable: true`, `activeTransfers: 0`. PM2 restart count включает контролируемые restart recovery тесты.
+- Release развернут в `/home/deploy/loader/releases/efcd8b0`, shared runtime подключён через symlink, зависимости установлены отдельным Node `v22.23.2`, WebTorrent зафиксирован как `3.0.21`.
+- PM2-процесс `loader` пересоздан, чтобы убрать сохранённый абсолютный путь к удалённому release `7acde0f`; теперь script path и cwd указывают на `efcd8b0`, процесс online с нулём restart.
 - `https://loader.lumastack.ru` опубликован через отдельный nginx vhost с отключённым buffering для SSE и proxy на `127.0.0.1:8787`. Let's Encrypt certificate действителен до `2026-11-25`, auto-renew включён.
-- Public smoke: health `ok`, authenticated session `200`, session cookie подтверждена, `/api/jobs` возвращает пустую очередь, SSE отдаёт initial snapshot, JS/CSS отвечают `200`.
-- Временные upload-артефакты и ограниченное sudo-правило удалены после deploy. Старый `7acde0f` удалён; оставлены текущий `65fa83f` и один rollback `5a7a0d1`. После E2E свободно `2.2G`, Loader использует около `97 MiB` RAM.
+- Public smoke: health `ok`, `storageConfigured: true`, `torrentAvailable: true`; manifest и PNG 192/512/180/32 отвечают `200`, размеры и maskable purpose совпадают. Production JS не содержит старый iOS `accept` filter.
+- Временные upload-артефакты отсутствуют. Старый rollback `5a7a0d1` удалён; оставлены текущий `efcd8b0` и rollback `65fa83f`. Свободно `2.1G`, Loader использует около `98 MiB` RAM.
 
 ### Production torrent restart E2E
 

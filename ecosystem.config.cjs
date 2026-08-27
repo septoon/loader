@@ -13,5 +13,19 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
     },
+  }, {
+    name: 'loader-vlc',
+    script: 'scripts/start-vlc-sftp.sh',
+    interpreter: '/bin/bash',
+    cwd: __dirname,
+    autorestart: true,
+    max_restarts: 8,
+    min_uptime: '10s',
+    restart_delay: 3_000,
+    kill_timeout: 10_000,
+    max_memory_restart: '180M',
+    env: {
+      NODE_ENV: 'production',
+    },
   }],
 }

@@ -9,6 +9,7 @@ Production-контур теперь принимает прямые HTTP(S) URL
 - Сохранён исходный каркас: боковая навигация, composer источника, status tabs, табличная очередь и раскрытые сведения задачи.
 - UI полностью переведён на русский, включая название PWA, login, document title и operational copy.
 - Новый пользовательский арт подключён как PWA icon: PNG 192×192 и maskable 512×512; отдельно подготовлены Apple Touch Icon 180×180 и favicon 32×32.
+- У file picker удалён MIME/extension `accept`: iOS Files больше не блокирует `.torrent` из-за ненадёжного UTType-сопоставления; после выбора по-прежнему проверяются расширение и bencode-содержимое.
 - Каркас сохранён: sidebar, composer, tabs, очередь и раскрываемые сведения. Добавлены цельные surface-карточки, status-pill, рабочее окно состояния, drag-and-drop `.torrent`, реальный список файлов и responsive mobile navigation.
 - Direct URL, magnet и `.torrent` проходят анализ до создания задачи; для auto-каталога magnet UI явно сообщает, что `Фильмы`/`Сериалы` определятся после metadata.
 - Актуальный визуальный reference: `docs/design/loader-russian-concept.png`.

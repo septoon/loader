@@ -105,7 +105,6 @@ export function SourceComposer({ disabled, onCreated, onError }: SourceComposerP
         className="visually-hidden"
         type="file"
         aria-label="Выбрать .torrent"
-        accept=".torrent,application/x-bittorrent"
         onChange={(event) => { void selectTorrentFile(event.target.files?.[0]); event.target.value = '' }}
       />
       <button className="button button-secondary file-button" type="button" onClick={() => fileInput.current?.click()} disabled={disabled || loading}>

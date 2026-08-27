@@ -3,12 +3,14 @@ import type { Job } from '../shared/types.js'
 import type { AppConfig } from './config.js'
 import { JobDatabase, type InternalJob } from './database.js'
 import { sanitizePublicError } from './security.js'
+import { RutubeTransfer } from './rutube-transfer.js'
 import { TorrentTransfer } from './torrent-transfer.js'
 import { YandexDiskAdapter } from './yandex-disk.js'
 
 export class JobRunner {
   readonly events = new EventEmitter()
   readonly #torrent: TorrentTransfer | null
+  readonly #rutube: RutubeTransfer | null
   #timer: NodeJS.Timeout | null = null
   #running: Promise<void> | null = null
 
@@ -19,6 +21,9 @@ export class JobRunner {
   ) {
     this.#torrent = storage
       ? new TorrentTransfer(database, storage, config, () => this.notify())
+      : null
+    this.#rutube = storage
+      ? new RutubeTransfer(database, storage, config, () => this.notify())
       : null
   }
 
@@ -33,6 +38,7 @@ export class JobRunner {
     if (this.#timer) clearInterval(this.#timer)
     this.#timer = null
     this.#torrent?.abortAll()
+    this.#rutube?.abortAll()
     await this.#running?.catch(() => undefined)
   }
 
@@ -50,7 +56,7 @@ export class JobRunner {
 
   pauseJob(id: string): Job {
     const job = this.database.pauseJob(id)
-    if (job.sourceKind !== 'direct-url') this.#torrent?.abort(id)
+    this.abortTransfer(job)
     this.notify(job)
     return job
   }
@@ -64,7 +70,7 @@ export class JobRunner {
 
   cancelJob(id: string): Job {
     const job = this.database.cancelJob(id)
-    if (job.sourceKind !== 'direct-url') this.#torrent?.abort(id)
+    this.abortTransfer(job)
     this.notify(job)
     return job
   }
@@ -77,6 +83,17 @@ export class JobRunner {
   private async process(job: InternalJob): Promise<void> {
     if (!this.storage) {
       this.fail(job, 'Яндекс Диск не настроен')
+      return
+    }
+
+    if (job.sourceKind === 'rutube') {
+      try {
+        await this.#rutube!.process(job)
+      } catch (error) {
+        const current = this.database.getInternalJob(job.id)
+        if (current && ['paused', 'cancelled'].includes(current.status)) return
+        this.fail(job, sanitizePublicError(error))
+      }
       return
     }
 
@@ -141,5 +158,10 @@ export class JobRunner {
     const failed = this.database.updateJob(job.id, { status: 'failed', speedBytesPerSecond: 0, errorMessage: message })
     this.database.addEvent(job.id, 'error', message)
     this.notify(failed)
+  }
+
+  private abortTransfer(job: InternalJob): void {
+    if (job.sourceKind === 'rutube') this.#rutube?.abort(job.id)
+    else if (job.sourceKind !== 'direct-url') this.#torrent?.abort(job.id)
   }
 }

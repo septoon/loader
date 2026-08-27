@@ -120,7 +120,7 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
         <div><dt>Назначение</dt><dd>{job.destinationPath}</dd></div>
         <div><dt>Источник</dt><dd>{job.sourceLabel}</dd></div>
         <div><dt>Добавлено</dt><dd>{formatDate(job.createdAt)}</dd></div>
-        <div><dt>Режим</dt><dd>{job.sourceKind === 'direct-url' ? 'Прямой импорт без передачи через сервер' : 'Последовательная передача без сохранения на сервере'}</dd></div>
+        <div><dt>Режим</dt><dd>{job.sourceKind === 'direct-url' ? 'Прямой импорт без передачи через сервер' : job.sourceKind === 'rutube' ? 'Rutube HLS → Яндекс Диск без сохранения на VPS' : 'Последовательная передача без сохранения на сервере'}</dd></div>
         {job.errorMessage && <div className="error-detail"><dt>Ошибка</dt><dd>{job.errorMessage}</dd></div>}
       </dl>}
       {tab === 'files' && (job.files.length > 0
@@ -129,7 +129,7 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
           <span><strong>{file.relativePath}</strong><small>{formatBytes(file.size)} · {fileStatusLabel(file.status)}</small></span>
           <span>{file.size > 0 ? `${Math.round(file.bytesTransferred / file.size * 100)}%` : '—'}</span>
         </div>)}</div>
-        : <div className="detail-placeholder"><Icon name="files"/><span>{job.sourceKind === 'direct-url' ? 'Один файл передаётся прямым импортом' : 'Состав файлов появится после получения метаданных'}</span></div>)}
+        : <div className="detail-placeholder"><Icon name="files"/><span>{job.sourceKind === 'direct-url' ? 'Один файл передаётся прямым импортом' : job.sourceKind === 'rutube' ? 'Размер файла появится после проверки HLS-потока' : 'Состав файлов появится после получения метаданных'}</span></div>)}
       {tab === 'log' && <div className="event-log">
         {!events && <span>Загрузка журнала…</span>}
         {events?.length === 0 && <span>Событий пока нет</span>}
@@ -176,7 +176,9 @@ function subtitle(job: Job): string {
   if (job.status === 'completed') return 'Сохранено на Яндекс Диске'
   if (job.status === 'failed') return 'Требуется внимание'
   if (job.status === 'cancelled') return 'Отменена'
-  if (job.status === 'verifying') return job.sourceKind === 'direct-url' ? 'Проверка на Яндекс Диске' : 'Проверка торрент-источника'
+  if (job.status === 'verifying') return job.sourceKind === 'direct-url'
+    ? 'Проверка на Яндекс Диске'
+    : job.sourceKind === 'rutube' ? 'Проверка потока Rutube' : 'Проверка торрент-источника'
   return 'Передача на Яндекс Диск'
 }
 

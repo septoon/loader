@@ -1,0 +1,385 @@
+import { createHash } from 'node:crypto'
+import { Readable } from 'node:stream'
+import type { AppConfig } from './config.js'
+import { JobDatabase, type InternalJob, type InternalJobFile } from './database.js'
+import { resolveRutubeSource, rutubeRequestHeaders, type RutubeSegment } from './rutube.js'
+import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
+
+interface ActiveTransfer {
+  controller: AbortController
+}
+
+interface HashedSource extends FileDigests {
+  size: number
+  segmentSizes: number[]
+}
+
+export class RutubeTransfer {
+  readonly #active = new Map<string, ActiveTransfer>()
+
+  constructor(
+    private readonly database: JobDatabase,
+    private readonly storage: YandexDiskAdapter,
+    private readonly config: AppConfig,
+    private readonly notify: () => void,
+  ) {}
+
+  abort(jobId: string): void {
+    this.#active.get(jobId)?.controller.abort(new Error('Загрузка остановлена пользователем'))
+  }
+
+  abortAll(): void {
+    for (const transfer of this.#active.values()) transfer.controller.abort(new Error('Сервис останавливается'))
+  }
+
+  async process(job: InternalJob): Promise<void> {
+    const controller = new AbortController()
+    this.#active.set(job.id, { controller })
+    try {
+      const source = await resolveRutubeSource(job.source)
+      controller.signal.throwIfAborted()
+      let file = job.files[0]
+      let segmentSizes: number[] | null = null
+
+      if (!file?.md5 || !file.sha256) {
+        this.database.updateJob(job.id, {
+          status: 'verifying', progress: null, bytesTransferred: 0, totalBytes: null,
+          speedBytesPerSecond: 0, errorMessage: null,
+        })
+        this.database.addEvent(job.id, 'info', `Rutube: проверяется поток ${source.resolution}`)
+        this.notify()
+        const progress = createJobProgressReporter(job.id, this.database, this.notify)
+        const hashed = await hashSegments(source.segments, job.source, controller.signal, progress)
+        segmentSizes = hashed.segmentSizes
+        const files = this.database.upsertTorrentFiles(job.id, [{
+          index: 0,
+          name: job.title,
+          path: job.title,
+          relativePath: job.title,
+          destinationPath: job.destinationPath,
+          length: hashed.size,
+        }])
+        file = this.database.updateJobFile(files[0]!.id, {
+          md5: hashed.md5,
+          sha256: hashed.sha256,
+          status: 'pending',
+          bytesTransferred: 0,
+        })
+        this.database.updateJob(job.id, {
+          progress: 0, bytesTransferred: 0, totalBytes: hashed.size, speedBytesPerSecond: 0,
+        })
+        this.database.addEvent(job.id, 'info', `Rutube: поток подготовлен, ${formatBytes(hashed.size)}`)
+        this.notify()
+      }
+      if (!file?.md5 || !file.sha256) throw new Error('Не удалось сохранить контрольные суммы Rutube')
+      const digests: FileDigests = { md5: file.md5, sha256: file.sha256 }
+
+      if (file.status === 'completed') {
+        const metadata = await this.storage.getMetadataOrNull(file.destinationPath)
+        if (metadata?.type === 'file' && metadata.size === file.size && metadata.md5 === file.md5) {
+          this.complete(job.id, file)
+          return
+        }
+        file = this.database.updateJobFile(file.id, { status: 'pending', bytesTransferred: 0, uploadHref: null })
+      }
+
+      const existing = await this.storage.getMetadataOrNull(file.destinationPath)
+      if (existing) {
+        if (existing.type === 'file' && existing.size === file.size && existing.md5 === file.md5) {
+          this.complete(job.id, file)
+          return
+        }
+        throw new Error(`Путь назначения уже занят другим файлом: ${file.destinationPath}`)
+      }
+
+      let uploadHref = file.uploadHref
+      let offset = 0
+      if (uploadHref) {
+        try {
+          offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
+        } catch {
+          uploadHref = null
+          this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
+        }
+      }
+      if (!segmentSizes) {
+        segmentSizes = await readSegmentSizes(source.segments, job.source, controller.signal)
+        assertTotalSize(segmentSizes, file.size)
+      }
+
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        controller.signal.throwIfAborted()
+        if (!uploadHref) {
+          uploadHref = await this.storage.requestUpload(file.destinationPath)
+          this.database.updateJobFile(file.id, { uploadHref })
+        }
+        if (offset >= file.size) {
+          await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
+          break
+        }
+        if (!segmentSizes) throw new Error('Не найдены размеры сегментов Rutube')
+
+        this.database.updateJobFile(file.id, { status: 'transferring', bytesTransferred: offset })
+        this.database.updateJob(job.id, {
+          status: 'transferring', progress: offset / file.size, bytesTransferred: offset,
+          totalBytes: file.size, speedBytesPerSecond: 0, errorMessage: null,
+        })
+        this.database.addEvent(job.id, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача Rutube: ${file.relativePath}`)
+        this.notify()
+
+        const progress = createFileProgressReporter(job.id, file.id, file.size, offset, this.database, this.notify)
+        const body = Readable.from(
+          readSegments(source.segments, segmentSizes, job.source, offset, controller.signal, progress),
+          { objectMode: false, highWaterMark: 256 * 1024 },
+        )
+        try {
+          await this.storage.uploadRange(uploadHref, offset, file.size, body, controller.signal, this.config.uploadTimeoutMs)
+          await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
+          break
+        } catch (error) {
+          body.destroy()
+          controller.signal.throwIfAborted()
+          if (attempt === 3) throw error
+          try {
+            offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
+          } catch {
+            uploadHref = null
+            offset = 0
+            this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
+          }
+          this.database.addEvent(job.id, 'info', `Соединение Rutube восстановлено с отметки ${formatBytes(offset)}`)
+          await delay(750 * (attempt + 1), controller.signal)
+        }
+      }
+
+      this.complete(job.id, file)
+    } finally {
+      this.#active.delete(job.id)
+    }
+  }
+
+  private complete(jobId: string, file: InternalJobFile): void {
+    this.database.updateJobFile(file.id, { status: 'completed', bytesTransferred: file.size })
+    const completed = this.database.updateJob(jobId, {
+      status: 'completed', progress: 1, bytesTransferred: file.size, totalBytes: file.size,
+      speedBytesPerSecond: 0, errorMessage: null,
+    })
+    this.database.addEvent(jobId, 'info', 'Видео Rutube сохранено и проверено на Яндекс Диске')
+    this.notify()
+    void completed
+  }
+}
+
+export async function hashSegments(
+  segments: RutubeSegment[],
+  source: string,
+  signal: AbortSignal,
+  onProgress: (bytes: number) => void,
+): Promise<HashedSource> {
+  const md5 = createHash('md5')
+  const sha256 = createHash('sha256')
+  const segmentSizes: number[] = []
+  let total = 0
+  for (const segment of segments) {
+    signal.throwIfAborted()
+    const response = await fetchSegment(segment.url, source, signal)
+    let size = 0
+    for await (const chunk of responseChunks(response, signal)) {
+      md5.update(chunk)
+      sha256.update(chunk)
+      size += chunk.byteLength
+      total += chunk.byteLength
+      onProgress(total)
+    }
+    if (size <= 0) throw new Error('Rutube вернул пустой HLS-сегмент')
+    segmentSizes.push(size)
+  }
+  return { md5: md5.digest('hex'), sha256: sha256.digest('hex'), size: total, segmentSizes }
+}
+
+export async function * readSegments(
+  segments: RutubeSegment[],
+  sizes: number[],
+  source: string,
+  start: number,
+  signal: AbortSignal,
+  onProgress: (bytes: number) => void,
+): AsyncGenerator<Buffer> {
+  assertTotalSize(sizes, sizes.reduce((sum, size) => sum + size, 0))
+  let base = 0
+  for (let index = 0; index < segments.length; index += 1) {
+    const size = sizes[index]!
+    if (base + size <= start) {
+      base += size
+      continue
+    }
+    signal.throwIfAborted()
+    const requestedOffset = Math.max(0, start - base)
+    const response = await fetchSegment(segments[index]!.url, source, signal, requestedOffset || undefined)
+    const ranged = requestedOffset > 0 && response.status === 206
+    let consumed = ranged ? requestedOffset : 0
+    let skip = ranged ? 0 : requestedOffset
+    for await (const original of responseChunks(response, signal)) {
+      let chunk = original
+      if (skip >= chunk.byteLength) {
+        skip -= chunk.byteLength
+        consumed += chunk.byteLength
+        continue
+      }
+      if (skip > 0) {
+        chunk = chunk.subarray(skip)
+        consumed += skip
+        skip = 0
+      }
+      consumed += chunk.byteLength
+      onProgress(base + consumed)
+      yield chunk
+    }
+    if (consumed !== size) throw new Error(`Размер HLS-сегмента изменился: ${consumed}/${size}`)
+    base += size
+  }
+}
+
+async function readSegmentSizes(segments: RutubeSegment[], source: string, signal: AbortSignal): Promise<number[]> {
+  const sizes = Array<number>(segments.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(8, segments.length) }, async () => {
+    while (true) {
+      const index = cursor
+      cursor += 1
+      if (index >= segments.length) return
+      sizes[index] = await readSegmentSize(segments[index]!.url, source, signal)
+    }
+  })
+  await Promise.all(workers)
+  return sizes
+}
+
+async function readSegmentSize(url: string, source: string, signal: AbortSignal): Promise<number> {
+  const headers = rutubeRequestHeaders(source)
+  const response = await fetch(url, {
+    method: 'HEAD', headers, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+  })
+  const size = Number(response.headers.get('content-length'))
+  if (response.ok && Number.isSafeInteger(size) && size > 0) return size
+  const fallback = await fetchSegment(url, source, signal, 0)
+  const range = fallback.headers.get('content-range')
+  await fallback.body?.cancel()
+  const total = Number(range?.split('/').at(-1))
+  if (fallback.status === 206 && Number.isSafeInteger(total) && total > 0) return total
+  throw new Error('Rutube не вернул размер HLS-сегмента')
+}
+
+async function fetchSegment(url: string, source: string, signal: AbortSignal, offset?: number): Promise<Response> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const headers = rutubeRequestHeaders(source)
+      if (offset !== undefined) headers.Range = `bytes=${offset}-`
+      const response = await fetch(url, {
+        headers, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(45_000)]),
+      })
+      if (response.ok && (!offset || [200, 206].includes(response.status))) return response
+      await response.body?.cancel()
+      lastError = new Error(`Rutube не вернул HLS-сегмент: HTTP ${response.status}`)
+      if (![429, 500, 502, 503, 504].includes(response.status)) break
+    } catch (error) {
+      lastError = error
+      signal.throwIfAborted()
+    }
+    await delay(400 * (2 ** attempt), signal)
+  }
+  throw lastError instanceof Error ? lastError : new Error('Не удалось получить HLS-сегмент Rutube')
+}
+
+async function * responseChunks(response: Response, signal: AbortSignal): AsyncGenerator<Buffer> {
+  if (!response.body) throw new Error('Rutube вернул пустой ответ')
+  const reader = response.body.getReader()
+  try {
+    while (true) {
+      signal.throwIfAborted()
+      const next = await reader.read()
+      if (next.done) break
+      yield Buffer.from(next.value)
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}
+
+function createJobProgressReporter(
+  jobId: string,
+  database: JobDatabase,
+  notify: () => void,
+): (bytes: number) => void {
+  return createProgressReporter((bytes, speed) => {
+    database.updateJob(jobId, { bytesTransferred: bytes, speedBytesPerSecond: speed })
+    notify()
+  })
+}
+
+function createFileProgressReporter(
+  jobId: string,
+  fileId: string,
+  totalBytes: number,
+  initialOffset: number,
+  database: JobDatabase,
+  notify: () => void,
+): (bytes: number) => void {
+  return createProgressReporter((bytes, speed) => {
+    database.updateJobFile(fileId, { bytesTransferred: bytes })
+    database.updateJob(jobId, {
+      progress: bytes / totalBytes, bytesTransferred: bytes, totalBytes, speedBytesPerSecond: speed,
+    })
+    notify()
+  }, initialOffset)
+}
+
+function createProgressReporter(
+  persist: (bytes: number, speed: number) => void,
+  initialOffset = 0,
+): (bytes: number) => void {
+  let lastBytes = initialOffset
+  let lastTime = Date.now()
+  let lastPersisted = lastTime
+  return (bytes) => {
+    const now = Date.now()
+    if (now - lastPersisted < 750 && bytes > initialOffset) return
+    const seconds = Math.max((now - lastTime) / 1_000, 0.001)
+    persist(bytes, Math.max(0, Math.round((bytes - lastBytes) / seconds)))
+    lastBytes = bytes
+    lastTime = now
+    lastPersisted = now
+  }
+}
+
+function assertTotalSize(sizes: number[], expected: number): void {
+  const total = sizes.reduce((sum, size) => sum + size, 0)
+  if (sizes.some((size) => !Number.isSafeInteger(size) || size <= 0) || total !== expected) {
+    throw new Error(`Размер потока Rutube изменился: ${total}/${expected}`)
+  }
+}
+
+function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, milliseconds)
+    const abort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      reject(signal.reason instanceof Error ? signal.reason : new Error('Загрузка остановлена'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    function done(): void {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }
+  })
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} Б`
+  const units = ['КиБ', 'МиБ', 'ГиБ', 'ТиБ']
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)) - 1, units.length - 1)
+  return `${(value / (1024 ** (exponent + 1))).toFixed(1)} ${units[exponent]}`
+}

@@ -4,6 +4,7 @@ import path from 'node:path'
 import ipaddr from 'ipaddr.js'
 import type { Destination, SourceAnalysis } from '../shared/types.js'
 import { destinations } from '../shared/types.js'
+import { getRutubeVideoId, resolveRutubeSource, RutubeSourceError } from './rutube.js'
 
 const destinationRoots: Record<Destination, string> = {
   auto: '/Media/Unsorted',
@@ -58,6 +59,30 @@ export async function analyzeSource(sourceValue: string, destinationValue: strin
   }
 
   await assertPublicHost(sourceUrl.hostname)
+  const rutubeHost = ['rutube.ru', 'www.rutube.ru'].includes(sourceUrl.hostname.toLowerCase().replace(/\.$/, ''))
+  if (rutubeHost) {
+    if (!getRutubeVideoId(sourceUrl)) throw new InputError('Укажите ссылку на отдельное видео Rutube')
+    try {
+      const resolved = await resolveRutubeSource(sourceUrl.href)
+      const resolvedDestination: Destination = destination === 'auto'
+        ? /(?:^|\W)(?:s\d{1,2}(?:e\d{1,3})?|season|сезон|выпуск)(?:\W|$)/iu.test(resolved.title) ? 'tv' : 'movies'
+        : destination
+      const title = sanitizeFileName(`${resolved.title}.ts`)
+      return {
+        source: sourceUrl.href,
+        sourceKind: 'rutube',
+        sourceLabel: `Rutube · ${resolved.id.slice(0, 8).toUpperCase()}`,
+        title,
+        destination: resolvedDestination,
+        destinationPath: buildDestinationPath(resolvedDestination, title),
+        supported: true,
+        note: `${resolved.resolution}, ${formatDuration(resolved.durationSeconds)} · последовательная передача без сохранения на VPS`,
+      }
+    } catch (error) {
+      if (error instanceof RutubeSourceError) throw new InputError(error.message)
+      throw error
+    }
+  }
   const title = inferUrlTitle(sourceUrl)
   return {
     source: sourceUrl.href,
@@ -212,4 +237,10 @@ function decodePathname(value: string): string {
   } catch {
     return value
   }
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.max(1, Math.round(seconds / 60))
+  const hours = Math.floor(minutes / 60)
+  return hours > 0 ? `${hours} ч ${minutes % 60} мин` : `${minutes} мин`
 }

@@ -1,7 +1,7 @@
 export const destinations = ['auto', 'movies', 'tv', 'unsorted'] as const
 
 export type Destination = (typeof destinations)[number]
-export type SourceKind = 'direct-url' | 'magnet' | 'torrent-file'
+export type SourceKind = 'direct-url' | 'rutube' | 'magnet' | 'torrent-file'
 export type JobStatus =
   | 'queued'
   | 'transferring'

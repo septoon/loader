@@ -31,6 +31,7 @@ test('при ожидании данных повторный поиск пир�
   const added: string[] = []
   refreshTorrentPeers({
     loaderDiscoveredPeers: new Set(['peer-1', 'peer-2']),
+    loaderConnectedPeers: new Set(['peer-2']),
     removePeer: (peer: string) => removed.push(peer),
     addPeer: (peer: string) => added.push(peer),
     discovery: {
@@ -40,8 +41,8 @@ test('при ожидании данных повторный поиск пир�
     },
   })
 
-  assert.deepEqual(removed, ['peer-1', 'peer-2'])
-  assert.deepEqual(added, ['peer-1', 'peer-2'])
+  assert.deepEqual(removed, ['peer-2', 'peer-1'])
+  assert.deepEqual(added, ['peer-2', 'peer-1'])
   assert.deepEqual(updates, [{ numwant: 50 }])
   assert.doesNotThrow(() => refreshTorrentPeers({}))
 })

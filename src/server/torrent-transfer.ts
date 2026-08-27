@@ -350,10 +350,17 @@ async function * readTorrentFile(
 }
 
 export function refreshTorrentPeers(torrent: any): void {
-  for (const peer of torrent.loaderDiscoveredPeers ?? []) {
+  const candidates = new Set<string>([
+    ...(torrent.loaderConnectedPeers ?? []),
+    ...(torrent.loaderDiscoveredPeers ?? []),
+  ])
+  let reconnectCount = 0
+  for (const peer of candidates) {
+    if (reconnectCount >= 50) break
     try {
       torrent.removePeer(peer)
       torrent.addPeer(peer)
+      reconnectCount += 1
     } catch {
       // The address can become invalid between discovery and reconnect.
     }
@@ -367,13 +374,20 @@ export function refreshTorrentPeers(torrent: any): void {
 
 function rememberDiscoveredPeers(torrent: any): void {
   const peers = new Set<string>()
+  const connectedPeers = new Set<string>()
   torrent.loaderDiscoveredPeers = peers
+  torrent.loaderConnectedPeers = connectedPeers
   torrent.on('peer', (peer: unknown) => {
     if (typeof peer !== 'string') return
+    if (peers.size >= 200) return
     peers.add(peer)
-    if (peers.size <= 50) return
-    const oldest = peers.values().next().value
-    if (oldest) peers.delete(oldest)
+  })
+  torrent.on('wire', (_wire: unknown, peer: unknown) => {
+    if (typeof peer !== 'string') return
+    connectedPeers.add(peer)
+    if (connectedPeers.size <= 50) return
+    const oldest = connectedPeers.values().next().value
+    if (oldest) connectedPeers.delete(oldest)
   })
 }
 

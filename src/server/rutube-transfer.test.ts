@@ -40,7 +40,7 @@ test('Rutube transfer хеширует и продолжает объединё�
     const start = chunks[0]!.byteLength + 3
     const output: Buffer[] = []
     for await (const chunk of readSegments(
-      segments, hashed.segmentSizes, 'https://rutube.ru/video/test/', start,
+      segments, hashed.segmentSizes, hashed.size, 'https://rutube.ru/video/test/', start,
       new AbortController().signal, () => undefined,
     )) output.push(chunk)
     assert.deepEqual(Buffer.concat(output), Buffer.concat(chunks).subarray(start))

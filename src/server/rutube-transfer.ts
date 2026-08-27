@@ -39,7 +39,7 @@ export class RutubeTransfer {
       const source = await resolveRutubeSource(job.source)
       controller.signal.throwIfAborted()
       let file = job.files[0]
-      let segmentSizes: number[] | null = null
+      let segmentSizes: Array<number | null> | null = null
 
       if (!file?.md5 || !file.sha256) {
         this.database.updateJob(job.id, {
@@ -95,6 +95,9 @@ export class RutubeTransfer {
       let uploadHref = file.uploadHref
       let offset = 0
       if (uploadHref) {
+        this.database.updateJob(job.id, { status: 'verifying', speedBytesPerSecond: 0, errorMessage: null })
+        this.database.addEvent(job.id, 'info', 'Rutube: восстанавливается контрольная точка передачи')
+        this.notify()
         try {
           offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
         } catch {
@@ -103,8 +106,7 @@ export class RutubeTransfer {
         }
       }
       if (!segmentSizes) {
-        segmentSizes = await readSegmentSizes(source.segments, job.source, controller.signal)
-        assertTotalSize(segmentSizes, file.size)
+        segmentSizes = await readSegmentSizesForOffset(source.segments, job.source, offset, controller.signal)
       }
 
       for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -129,7 +131,7 @@ export class RutubeTransfer {
 
         const progress = createFileProgressReporter(job.id, file.id, file.size, offset, this.database, this.notify)
         const body = Readable.from(
-          readSegments(source.segments, segmentSizes, job.source, offset, controller.signal, progress),
+          readSegments(source.segments, segmentSizes, file.size, job.source, offset, controller.signal, progress),
           { objectMode: false, highWaterMark: 256 * 1024 },
         )
         try {
@@ -199,24 +201,29 @@ export async function hashSegments(
 
 export async function * readSegments(
   segments: RutubeSegment[],
-  sizes: number[],
+  sizes: Array<number | null>,
+  totalBytes: number,
   source: string,
   start: number,
   signal: AbortSignal,
   onProgress: (bytes: number) => void,
 ): AsyncGenerator<Buffer> {
-  assertTotalSize(sizes, sizes.reduce((sum, size) => sum + size, 0))
+  if (sizes.length !== segments.length) throw new Error('Карта HLS-сегментов имеет неверную длину')
   let base = 0
   for (let index = 0; index < segments.length; index += 1) {
-    const size = sizes[index]!
-    if (base + size <= start) {
-      base += size
+    const knownSize = sizes[index] ?? null
+    if (knownSize !== null && base + knownSize <= start) {
+      base += knownSize
       continue
     }
+    if (base < start && knownSize === null) throw new Error('Не удалось восстановить позицию внутри HLS-потока')
     signal.throwIfAborted()
     const requestedOffset = Math.max(0, start - base)
     const response = await fetchSegment(segments[index]!.url, source, signal, requestedOffset || undefined)
     const ranged = requestedOffset > 0 && response.status === 206
+    const responseSize = readResponseTotalSize(response, ranged)
+    const size = knownSize ?? responseSize
+    if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Rutube не вернул размер HLS-сегмента')
     let consumed = ranged ? requestedOffset : 0
     let skip = ranged ? 0 : requestedOffset
     for await (const original of responseChunks(response, signal)) {
@@ -236,22 +243,26 @@ export async function * readSegments(
       yield chunk
     }
     if (consumed !== size) throw new Error(`Размер HLS-сегмента изменился: ${consumed}/${size}`)
+    sizes[index] = size
     base += size
   }
+  if (base !== totalBytes) throw new Error(`Размер потока Rutube изменился: ${base}/${totalBytes}`)
 }
 
-async function readSegmentSizes(segments: RutubeSegment[], source: string, signal: AbortSignal): Promise<number[]> {
-  const sizes = Array<number>(segments.length)
-  let cursor = 0
-  const workers = Array.from({ length: Math.min(8, segments.length) }, async () => {
-    while (true) {
-      const index = cursor
-      cursor += 1
-      if (index >= segments.length) return
-      sizes[index] = await readSegmentSize(segments[index]!.url, source, signal)
-    }
-  })
-  await Promise.all(workers)
+async function readSegmentSizesForOffset(
+  segments: RutubeSegment[],
+  source: string,
+  offset: number,
+  signal: AbortSignal,
+): Promise<Array<number | null>> {
+  const sizes: Array<number | null> = Array(segments.length).fill(null)
+  let total = 0
+  for (let index = 0; index < segments.length && total < offset; index += 1) {
+    const size = await readSegmentSize(segments[index]!.url, source, signal)
+    sizes[index] = size
+    total += size
+  }
+  if (total < offset) throw new Error('Контрольная точка находится за пределами потока Rutube')
   return sizes
 }
 
@@ -359,6 +370,11 @@ function assertTotalSize(sizes: number[], expected: number): void {
   if (sizes.some((size) => !Number.isSafeInteger(size) || size <= 0) || total !== expected) {
     throw new Error(`Размер потока Rutube изменился: ${total}/${expected}`)
   }
+}
+
+function readResponseTotalSize(response: Response, ranged: boolean): number {
+  if (ranged) return Number(response.headers.get('content-range')?.split('/').at(-1))
+  return Number(response.headers.get('content-length'))
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {

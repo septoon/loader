@@ -77,15 +77,19 @@ export class YandexDiskAdapter {
     body: Readable,
     signal: AbortSignal,
     timeoutMs: number,
+    uploadLength?: number,
   ): Promise<void> {
     const uploadUrl = validateUploadHref(href)
-    const length = totalBytes - start
-    if (!Number.isSafeInteger(length) || length <= 0) throw new Error('Некорректный диапазон загрузки')
+    const length = uploadLength ?? totalBytes - start
+    const end = start + length - 1
+    if (!Number.isSafeInteger(length) || length <= 0 || !Number.isSafeInteger(end) || end >= totalBytes) {
+      throw new Error('Некорректный диапазон загрузки')
+    }
     const headers: Record<string, string> = {
       'Content-Length': String(length),
       'Content-Type': 'application/octet-stream',
     }
-    if (start > 0) headers['Content-Range'] = `bytes ${start}-${totalBytes - 1}/${totalBytes}`
+    if (start > 0 || length < totalBytes) headers['Content-Range'] = `bytes ${start}-${end}/${totalBytes}`
     const response = await fetch(uploadUrl, {
       method: 'PUT',
       headers,
@@ -98,6 +102,7 @@ export class YandexDiskAdapter {
       const text = await readBody(response)
       throw new YandexHttpError(response.status, `Яндекс Диск отклонил поток: HTTP ${response.status}: ${safeBody(text)}`)
     }
+    await response.body?.cancel()
   }
 
   async getStableUploadOffset(href: string, digests: FileDigests, totalBytes: number): Promise<number> {

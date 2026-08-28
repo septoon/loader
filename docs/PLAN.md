@@ -24,13 +24,15 @@
   - [ ] Добавить backup/retention и расширенную observability.
 - [x] Выполнить deploy и public health/auth/static/SSE smoke после разрешения пользователя.
 - [x] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
-- [ ] Выпустить production hotfix torrent cache после подтверждения пользователя:
+- [x] Выпустить production hotfix torrent cache после подтверждения пользователя:
   - [x] Не снимать selection активного read-window при заполнении bounded cache.
   - [x] Показывать фактический прогресс и скорость hash-pass.
   - [x] Завершать задачу понятной ошибкой после тайм-аута отсутствия torrent data.
   - [x] Не отправлять `Content-Type: application/json` у пустых pause/cancel запросов.
-  - [ ] Commit/push/deploy и проверка текущей пользовательской задачи на production.
-- [ ] После отдельного согласования добавить единый read-only доступ к `/Media` для VLC; основной кандидат для текущих стабильных клиентов — SFTP bridge к Yandex Disk без дискового staging на VPS.
+  - [x] Commit/push/deploy, live bounded progress и реальные pause/cancel на production.
+- [x] Добавить отдельный transport для страниц Rutube: официальный play-options API, максимум 720p, последовательный HLS hash/upload, persistent segment checkpoint и resume без staging.
+- [x] Добавить единый read-only доступ к `/Media` для VLC через HTTPS WebDAV с range-stream из официального Yandex Disk API; SFTP bridge также запущен локально, но внешний TCP 2022 требует отдельного root-правила UFW.
+- [x] Разделить source/Yandex throughput: production profile, 8-МиБ bounded RAM-buffer, range checkpoint, write/backpressure telemetry и отдельные Source/Yandex/Bottleneck показатели в UI.
 
 ## Критерий выбора транспорта
 
@@ -43,9 +45,9 @@
 ## Подтверждённая транспортная архитектура
 
 - Direct HTTP: remote import Yandex Disk, затем проверка operation и metadata; media bytes не проходят через VPS.
-- Streaming fallback: continuous PUT; после ошибки `HEAD` с full MD5/SHA-256/size, стабилизация server offset, затем upload остатка.
-- Torrent: WebTorrent sequential stream -> bounded cache -> continuous Yandex uploader; при сбое закончить hash-pass и повторно читать source с server offset.
-- Поддерживаемая video page: получить прямой progressive URL без транскодирования/merge и передать его в remote import либо bounded stream.
+- Streaming fallback: последовательные 8-МиБ `Content-Range`; после ошибки `HEAD` с full MD5/SHA-256/size, стабилизация server offset, затем продолжение с точной отметки.
+- Torrent: WebTorrent sequential stream -> bounded piece-cache -> bounded 8-МиБ RAM-buffer -> Yandex range uploader; при сбое повторно читать source с server offset.
+- Rutube: официальный play-options API -> максимум 720p HLS/MPEG-TS -> bounded hash-pass -> 8-МиБ Yandex ranges с точным resume по segment checkpoint.
 - Если source нельзя повторно прочитать, full hashes неизвестны или upload URL потерян, job честно переходит в Retry; полный staging на VPS не использовать скрытно.
 
 ## После транспортной валидации
@@ -55,4 +57,4 @@
 - Авторизация веб-интерфейса, SSRF/path/file-name validation, rate limits и безопасная работа с subprocess.
 - Progress, pause/cancel/retry, понятные ошибки и диагностические логи без секретов.
 - PWA с адаптивным compact UI.
-- Storage seam для будущих `Library` и `Open in VLC`, без реализации Library на текущем этапе.
+- Read-only медиатека `/Media` для VLC через WebDAV/HTTPS; временная Yandex download URL валидируется и не выводится клиенту или в логи.

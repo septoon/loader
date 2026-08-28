@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto'
-import { Readable } from 'node:stream'
+import { performance } from 'node:perf_hooks'
 import type { AppConfig } from './config.js'
 import { JobDatabase, type InternalJob, type InternalJobFile } from './database.js'
 import { resolveRutubeSource, rutubeRequestHeaders, type RutubeSegment } from './rutube.js'
+import {
+  bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBuffer, uploadChunkBytes,
+} from './transfer-buffer.js'
 import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
 
 interface ActiveTransfer {
@@ -121,39 +124,70 @@ export class RutubeTransfer {
           this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
         }
       }
-      for (let attempt = 0; attempt < 4; attempt += 1) {
+      this.database.updateJobFile(file.id, { status: 'transferring', bytesTransferred: offset })
+      this.database.updateJob(job.id, {
+        status: 'transferring', progress: offset / file.size, bytesTransferred: offset,
+        totalBytes: file.size, speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
+        yandexUploadSpeedBytesPerSecond: 0, bottleneck: null, bufferedBytes: 0,
+        bufferCapacityBytes: Math.min(uploadChunkBytes, file.size - offset), errorMessage: null,
+      })
+      this.database.addEvent(job.id, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача Rutube: ${file.relativePath}`)
+      this.notify()
+
+      let consecutiveFailures = 0
+      while (offset < file.size) {
         controller.signal.throwIfAborted()
         if (!uploadHref) {
           uploadHref = await this.storage.requestUpload(file.destinationPath)
           this.database.updateJobFile(file.id, { uploadHref })
         }
-        if (offset >= file.size) {
-          await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
-          break
-        }
         if (!segmentSizes) throw new Error('Не найдены размеры сегментов Rutube')
 
-        this.database.updateJobFile(file.id, { status: 'transferring', bytesTransferred: offset })
-        this.database.updateJob(job.id, {
-          status: 'transferring', progress: offset / file.size, bytesTransferred: offset,
-          totalBytes: file.size, speedBytesPerSecond: 0, errorMessage: null,
-        })
-        this.database.addEvent(job.id, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача Rutube: ${file.relativePath}`)
-        this.notify()
-
-        const progress = createFileProgressReporter(job.id, file.id, file.size, offset, this.database, this.notify)
-        const body = Readable.from(
-          readSegments(source.segments, segmentSizes, file.size, job.source, offset, controller.signal, progress),
-          { objectMode: false, highWaterMark: 256 * 1024 },
+        const length = Math.min(uploadChunkBytes, file.size - offset)
+        const buffered = createBufferedBytesReporter(job.id, length, this.database, this.notify)
+        const sourceProgress = createSourceProgressReporter(job.id, offset, this.database, this.notify)
+        const sourceStarted = performance.now()
+        const buffer = await readExactBuffer(
+          readSegments(source.segments, segmentSizes, file.size, job.source, offset, controller.signal, sourceProgress),
+          length,
+          buffered,
         )
+        const sourceSpeed = bytesPerSecond(length, performance.now() - sourceStarted)
+        const beforeUpload = this.database.getInternalJob(job.id)
+        this.database.updateJob(job.id, {
+          sourceSpeedBytesPerSecond: sourceSpeed,
+          bottleneck: detectBottleneck(sourceSpeed, beforeUpload?.yandexUploadSpeedBytesPerSecond ?? 0),
+          bufferedBytes: length,
+          bufferCapacityBytes: length,
+        })
+        const measured = createMeasuredUploadBody(buffer, buffered)
         try {
-          await this.storage.uploadRange(uploadHref, offset, file.size, body, controller.signal, this.config.uploadTimeoutMs)
-          await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
-          break
+          const uploadStarted = performance.now()
+          await this.storage.uploadRange(
+            uploadHref, offset, file.size, measured.body, controller.signal, this.config.uploadTimeoutMs, length,
+          )
+          const uploadRequestMs = performance.now() - uploadStarted
+          const yandexUploadSpeed = bytesPerSecond(length, uploadRequestMs)
+          offset += length
+          consecutiveFailures = 0
+          this.database.updateJobFile(file.id, { bytesTransferred: offset })
+          this.database.updateJob(job.id, {
+            progress: offset / file.size, bytesTransferred: offset, totalBytes: file.size,
+            speedBytesPerSecond: yandexUploadSpeed,
+            sourceSpeedBytesPerSecond: sourceSpeed,
+            yandexUploadSpeedBytesPerSecond: yandexUploadSpeed,
+            bottleneck: detectBottleneck(sourceSpeed, yandexUploadSpeed),
+            bufferedBytes: 0,
+            bufferCapacityBytes: length,
+            uploadRequestMs: Math.round(uploadRequestMs),
+            uploadWriteBlockedMs: Math.round(measured.metrics.writeBlockedMs),
+          })
+          this.notify()
         } catch (error) {
-          body.destroy()
+          measured.body.destroy()
           controller.signal.throwIfAborted()
-          if (attempt === 3) throw error
+          consecutiveFailures += 1
+          if (consecutiveFailures >= 4) throw error
           try {
             offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
           } catch {
@@ -161,10 +195,17 @@ export class RutubeTransfer {
             offset = 0
             this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
           }
+          this.database.updateJobFile(file.id, { bytesTransferred: offset })
+          this.database.updateJob(job.id, {
+            progress: offset / file.size, bytesTransferred: offset, totalBytes: file.size, speedBytesPerSecond: 0,
+          })
           this.database.addEvent(job.id, 'info', `Соединение Rutube восстановлено с отметки ${formatBytes(offset)}`)
-          await delay(750 * (attempt + 1), controller.signal)
+          this.notify()
+          await delay(750 * consecutiveFailures, controller.signal)
         }
       }
+
+      await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
 
       this.complete(job.id, file)
     } finally {
@@ -309,27 +350,45 @@ function createJobProgressReporter(
     database.updateJob(jobId, {
       bytesTransferred: bytes,
       speedBytesPerSecond: speed,
+      sourceSpeedBytesPerSecond: speed,
+      bottleneck: 'source',
       ...(totalBytes ? { progress: bytes / totalBytes, totalBytes } : {}),
     })
     notify()
   })
 }
 
-function createFileProgressReporter(
+function createSourceProgressReporter(
   jobId: string,
-  fileId: string,
-  totalBytes: number,
   initialOffset: number,
   database: JobDatabase,
   notify: () => void,
 ): (bytes: number) => void {
   return createProgressReporter((bytes, speed) => {
-    database.updateJobFile(fileId, { bytesTransferred: bytes })
+    void bytes
+    const job = database.getInternalJob(jobId)
     database.updateJob(jobId, {
-      progress: bytes / totalBytes, bytesTransferred: bytes, totalBytes, speedBytesPerSecond: speed,
+      sourceSpeedBytesPerSecond: speed,
+      bottleneck: detectBottleneck(speed, job?.yandexUploadSpeedBytesPerSecond ?? 0),
     })
     notify()
   }, initialOffset)
+}
+
+function createBufferedBytesReporter(
+  jobId: string,
+  capacity: number,
+  database: JobDatabase,
+  notify: () => void,
+): (bytes: number) => void {
+  let lastPersisted = 0
+  return (bytes) => {
+    const now = Date.now()
+    if (bytes !== 0 && bytes !== capacity && now - lastPersisted < 750) return
+    database.updateJob(jobId, { bufferedBytes: bytes, bufferCapacityBytes: capacity })
+    lastPersisted = now
+    notify()
+  }
 }
 
 function createProgressReporter(

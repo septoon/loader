@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto'
 import { readFile, realpath, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { Readable } from 'node:stream'
+import { performance } from 'node:perf_hooks'
 import WebTorrent from 'webtorrent'
 import type { AppConfig } from './config.js'
 import { BoundedPieceStore } from './bounded-piece-store.js'
 import { JobDatabase, type InternalJob, type InternalJobFile } from './database.js'
 import { selectTorrentFiles } from './security.js'
+import {
+  bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBuffer, uploadChunkBytes,
+} from './transfer-buffer.js'
 import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
 
 interface ActiveTransfer {
@@ -85,6 +88,7 @@ export class TorrentTransfer {
         bytesTransferred: totalBytes,
         totalBytes,
         speedBytesPerSecond: 0,
+        bufferedBytes: 0,
         errorMessage: null,
       })
       this.database.addEvent(job.id, 'info', 'Все файлы сохранены и проверены на Яндекс Диске')
@@ -158,46 +162,80 @@ export class TorrentTransfer {
       }
     }
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    this.database.updateJobFile(file.id, { status: 'transferring', bytesTransferred: offset })
+    this.database.updateJob(jobId, {
+      status: 'transferring', errorMessage: null, speedBytesPerSecond: 0,
+      sourceSpeedBytesPerSecond: 0, yandexUploadSpeedBytesPerSecond: 0,
+      bottleneck: null, bufferedBytes: 0,
+      bufferCapacityBytes: Math.min(uploadChunkBytes, file.size - offset),
+    })
+    this.database.addEvent(jobId, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача: ${file.relativePath}`)
+    this.updateAggregate(jobId, 0)
+    this.notify()
+
+    let consecutiveFailures = 0
+    while (offset < file.size) {
       signal.throwIfAborted()
       if (!uploadHref) {
         uploadHref = await this.storage.requestUpload(file.destinationPath)
         this.database.updateJobFile(file.id, { uploadHref })
       }
-      if (offset >= file.size) {
-        await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
-        break
-      }
 
-      this.database.updateJobFile(file.id, { status: 'transferring', bytesTransferred: offset })
-      this.database.updateJob(jobId, { status: 'transferring', errorMessage: null })
-      this.database.addEvent(jobId, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача: ${file.relativePath}`)
-      this.notify()
-
-      const progress = createProgressReporter(jobId, file.id, offset, this.database, this.notify)
-      const body = Readable.from(
+      const length = Math.min(uploadChunkBytes, file.size - offset)
+      const buffered = createBufferedBytesReporter(jobId, length, this.database, this.notify)
+      const sourceProgress = createSourceSpeedReporter(jobId, offset, this.database, this.notify)
+      const sourceStarted = performance.now()
+      const buffer = await readExactBuffer(
         readTorrentFile(
           torrent,
           torrentFile,
           offset,
           signal,
-          progress,
+          sourceProgress,
           this.config.torrentMetadataTimeoutMs,
           () => {
-            this.updateAggregate(jobId, 0)
+            this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source' })
             this.notify()
           },
         ),
-        { objectMode: false, highWaterMark: 256 * 1024 },
+        length,
+        buffered,
       )
+      const sourceSpeed = bytesPerSecond(length, performance.now() - sourceStarted)
+      const beforeUpload = this.database.getInternalJob(jobId)
+      this.database.updateJob(jobId, {
+        sourceSpeedBytesPerSecond: sourceSpeed,
+        bottleneck: detectBottleneck(sourceSpeed, beforeUpload?.yandexUploadSpeedBytesPerSecond ?? 0),
+        bufferedBytes: length,
+        bufferCapacityBytes: length,
+      })
+      const measured = createMeasuredUploadBody(buffer, buffered)
       try {
-        await this.storage.uploadRange(uploadHref, offset, file.size, body, signal, this.config.uploadTimeoutMs)
-        await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
-        break
+        const uploadStarted = performance.now()
+        await this.storage.uploadRange(
+          uploadHref, offset, file.size, measured.body, signal, this.config.uploadTimeoutMs, length,
+        )
+        const uploadRequestMs = performance.now() - uploadStarted
+        const yandexUploadSpeed = bytesPerSecond(length, uploadRequestMs)
+        offset += length
+        consecutiveFailures = 0
+        this.database.updateJobFile(file.id, { bytesTransferred: offset })
+        this.updateAggregate(jobId, yandexUploadSpeed)
+        this.database.updateJob(jobId, {
+          sourceSpeedBytesPerSecond: sourceSpeed,
+          yandexUploadSpeedBytesPerSecond: yandexUploadSpeed,
+          bottleneck: detectBottleneck(sourceSpeed, yandexUploadSpeed),
+          bufferedBytes: 0,
+          bufferCapacityBytes: length,
+          uploadRequestMs: Math.round(uploadRequestMs),
+          uploadWriteBlockedMs: Math.round(measured.metrics.writeBlockedMs),
+        })
+        this.notify()
       } catch (error) {
-        body.destroy()
+        measured.body.destroy()
         signal.throwIfAborted()
-        if (attempt === 3) throw error
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 4) throw error
         try {
           offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
         } catch {
@@ -205,11 +243,16 @@ export class TorrentTransfer {
           offset = 0
           this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
         }
+        this.database.updateJobFile(file.id, { bytesTransferred: offset })
         this.database.addEvent(jobId, 'info', `Соединение восстановлено с отметки ${formatBytes(offset)}`)
         this.updateAggregate(jobId, 0)
-        await delay(750 * (attempt + 1), signal)
+        this.database.updateJob(jobId, { bufferedBytes: 0 })
+        this.notify()
+        await delay(750 * consecutiveFailures, signal)
       }
     }
+
+    await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
 
     this.database.updateJobFile(file.id, { status: 'completed', bytesTransferred: file.size })
     this.updateAggregate(jobId, 0)
@@ -470,10 +513,54 @@ function createProgressReporter(
         bytesTransferred: transferred,
         totalBytes: total,
         speedBytesPerSecond: speed,
+        sourceSpeedBytesPerSecond: speed,
+        bottleneck: 'source',
       })
     }
     lastBytes = offset
     lastTime = now
+    lastPersisted = now
+    notify()
+  }
+}
+
+function createSourceSpeedReporter(
+  jobId: string,
+  initialOffset: number,
+  database: JobDatabase,
+  notify: () => void,
+): (offset: number) => void {
+  let lastBytes = initialOffset
+  let lastTime = Date.now()
+  let lastPersisted = lastTime
+  return (offset) => {
+    const now = Date.now()
+    if (now - lastPersisted < 750 && offset > initialOffset) return
+    const seconds = Math.max((now - lastTime) / 1_000, 0.001)
+    const speed = Math.max(0, Math.round((offset - lastBytes) / seconds))
+    const job = database.getInternalJob(jobId)
+    database.updateJob(jobId, {
+      sourceSpeedBytesPerSecond: speed,
+      bottleneck: detectBottleneck(speed, job?.yandexUploadSpeedBytesPerSecond ?? 0),
+    })
+    lastBytes = offset
+    lastTime = now
+    lastPersisted = now
+    notify()
+  }
+}
+
+function createBufferedBytesReporter(
+  jobId: string,
+  capacity: number,
+  database: JobDatabase,
+  notify: () => void,
+): (bytes: number) => void {
+  let lastPersisted = 0
+  return (bytes) => {
+    const now = Date.now()
+    if (bytes !== 0 && bytes !== capacity && now - lastPersisted < 750) return
+    database.updateJob(jobId, { bufferedBytes: bytes, bufferCapacityBytes: capacity })
     lastPersisted = now
     notify()
   }

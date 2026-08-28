@@ -155,7 +155,9 @@ export class JobRunner {
     for (const file of current.files.filter((entry) => ['hashing', 'transferring'].includes(entry.status))) {
       this.database.updateJobFile(file.id, { status: 'failed' })
     }
-    const failed = this.database.updateJob(job.id, { status: 'failed', speedBytesPerSecond: 0, errorMessage: message })
+    const failed = this.database.updateJob(job.id, {
+      status: 'failed', speedBytesPerSecond: 0, bufferedBytes: 0, errorMessage: message,
+    })
     this.database.addEvent(job.id, 'error', message)
     this.notify(failed)
   }

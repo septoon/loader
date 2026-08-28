@@ -30,7 +30,16 @@ test('очередь и события сохраняются после пов�
       'Загрузка приостановлена',
     ])
     second.resumeJob(created.id)
-    const transferring = second.updateJob(created.id, { status: 'transferring' })
+    const transferring = second.updateJob(created.id, {
+      status: 'transferring', sourceSpeedBytesPerSecond: 40_000_000,
+      yandexUploadSpeedBytesPerSecond: 128_000, bottleneck: 'yandex',
+      bufferedBytes: 0, bufferCapacityBytes: 8 * 1024 * 1024,
+      uploadRequestMs: 64_000, uploadWriteBlockedMs: 200,
+    })
+    assert.equal(transferring.sourceSpeedBytesPerSecond, 40_000_000)
+    assert.equal(transferring.yandexUploadSpeedBytesPerSecond, 128_000)
+    assert.equal(transferring.bottleneck, 'yandex')
+    assert.equal(transferring.uploadRequestMs, 64_000)
     assert.throws(() => second.cancelJob(transferring.id), JobConflictError)
     second.close()
   } finally {

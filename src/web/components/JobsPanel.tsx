@@ -71,7 +71,7 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
     </div>
 
     <div className="jobs-head" aria-hidden="true">
-      <span>Название</span><span>Назначение</span><span>Состояние</span><span>Прогресс</span><span>Скорость</span><span>Осталось</span><span>Действия</span>
+      <span>Название</span><span>Назначение</span><span>Состояние</span><span>Прогресс</span><span>Каналы</span><span>Осталось</span><span>Действия</span>
     </div>
 
     {visibleJobs.length === 0
@@ -89,7 +89,7 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
               <span className="job-destination"><small>Назначение</small>{job.destinationPath}</span>
               <span className={`job-status status-${job.status}`}><small>Состояние</small>{statusLabel(job.status)}</span>
               <span className="job-progress-cell"><small>Прогресс</small><Progress job={job} /></span>
-              <span className="job-metric"><small>Скорость</small>{job.speedBytesPerSecond ? `${formatBytes(job.speedBytesPerSecond)}/с` : '—'}</span>
+              <Throughput job={job} />
               <span className="job-metric"><small>Осталось</small>{remaining(job)}</span>
               <span className="row-expand-mobile"><Icon name="chevron" /></span>
             </button>
@@ -121,6 +121,8 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
         <div><dt>Источник</dt><dd>{job.sourceLabel}</dd></div>
         <div><dt>Добавлено</dt><dd>{formatDate(job.createdAt)}</dd></div>
         <div><dt>Режим</dt><dd>{job.sourceKind === 'direct-url' ? 'Прямой импорт без передачи через сервер' : job.sourceKind === 'rutube' ? 'Rutube HLS → Яндекс Диск без сохранения на VPS' : 'Последовательная передача без сохранения на сервере'}</dd></div>
+        {job.bufferCapacityBytes !== null && job.bufferCapacityBytes > 0 && <div><dt>Буфер</dt><dd>{formatBytes(job.bufferedBytes ?? 0)} из {formatBytes(job.bufferCapacityBytes)}</dd></div>}
+        {job.uploadRequestMs !== null && <div><dt>Последний PUT</dt><dd>{formatDuration(job.uploadRequestMs)} · блокировка write {formatDuration(job.uploadWriteBlockedMs ?? 0)}</dd></div>}
         {job.errorMessage && <div className="error-detail"><dt>Ошибка</dt><dd>{job.errorMessage}</dd></div>}
       </dl>}
       {tab === 'files' && (job.files.length > 0
@@ -137,6 +139,14 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
       </div>}
     </div>
   </div>
+}
+
+function Throughput({ job }: { job: Job }) {
+  return <span className="job-throughput">
+    <span><em>Источник</em><strong>{formatRate(job.sourceSpeedBytesPerSecond)}</strong></span>
+    <span><em>Яндекс</em><strong>{formatRate(job.yandexUploadSpeedBytesPerSecond)}</strong></span>
+    <span><em>Узкое место</em><strong>{bottleneckLabel(job)}</strong></span>
+  </span>
 }
 
 function DetailButton({ active, icon, label, onClick }: { active: boolean, icon: 'info' | 'files' | 'log', label: string, onClick: () => void }) {
@@ -194,6 +204,22 @@ function formatBytes(value: number): string {
   const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']
   const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value / (1024 ** exponent))} ${units[exponent]}`
+}
+
+function formatRate(value: number | null): string {
+  return value && value > 0 ? `${formatBytes(value)}/с` : '—'
+}
+
+function formatDuration(milliseconds: number): string {
+  return milliseconds < 1_000 ? `${Math.round(milliseconds)} мс` : `${(milliseconds / 1_000).toFixed(1)} с`
+}
+
+function bottleneckLabel(job: Job): string {
+  if (job.sourceKind === 'direct-url') return 'Не измеряется'
+  if (job.bottleneck === 'source') return job.sourceKind === 'rutube' ? 'Rutube' : 'Торрент'
+  if (job.bottleneck === 'yandex') return 'Яндекс Диск'
+  if (job.bottleneck === 'balanced') return 'Баланс'
+  return '—'
 }
 
 function fileStatusLabel(status: JobFileStatus): string {

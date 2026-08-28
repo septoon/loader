@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import type {
-  Destination, Job, JobEvent, JobFile, JobFileStatus, JobStatus, SourceAnalysis,
+  Destination, Job, JobEvent, JobFile, JobFileStatus, JobStatus, SourceAnalysis, TransferBottleneck,
 } from '../shared/types.js'
 import type { SelectedTorrentFile } from './security.js'
 
@@ -20,6 +20,13 @@ interface JobRow {
   bytes_transferred: number | null
   total_bytes: number | null
   speed_bytes_per_second: number | null
+  source_speed_bytes_per_second: number | null
+  yandex_upload_speed_bytes_per_second: number | null
+  bottleneck: TransferBottleneck | null
+  buffered_bytes: number | null
+  buffer_capacity_bytes: number | null
+  upload_request_ms: number | null
+  upload_write_blocked_ms: number | null
   error_message: string | null
   operation_href: string | null
   created_at: string
@@ -67,7 +74,9 @@ export interface InternalJob extends Job {
 
 type JobPatch = Partial<Pick<InternalJob,
   'sourceLabel' | 'title' | 'destination' | 'destinationPath' | 'status' | 'progress'
-  | 'bytesTransferred' | 'totalBytes' | 'speedBytesPerSecond' | 'errorMessage' | 'operationHref'>>
+  | 'bytesTransferred' | 'totalBytes' | 'speedBytesPerSecond' | 'sourceSpeedBytesPerSecond'
+  | 'yandexUploadSpeedBytesPerSecond' | 'bottleneck' | 'bufferedBytes' | 'bufferCapacityBytes'
+  | 'uploadRequestMs' | 'uploadWriteBlockedMs' | 'errorMessage' | 'operationHref'>>
 
 type JobFilePatch = Partial<Pick<InternalJobFile,
   'status' | 'bytesTransferred' | 'md5' | 'sha256' | 'uploadHref' | 'sourceCheckpoint'>>
@@ -96,6 +105,13 @@ export class JobDatabase {
         bytes_transferred INTEGER,
         total_bytes INTEGER,
         speed_bytes_per_second INTEGER,
+        source_speed_bytes_per_second INTEGER,
+        yandex_upload_speed_bytes_per_second INTEGER,
+        bottleneck TEXT,
+        buffered_bytes INTEGER,
+        buffer_capacity_bytes INTEGER,
+        upload_request_ms INTEGER,
+        upload_write_blocked_ms INTEGER,
         error_message TEXT,
         operation_href TEXT,
         created_at TEXT NOT NULL,
@@ -128,6 +144,21 @@ export class JobDatabase {
         created_at TEXT NOT NULL
       ) STRICT;
     `)
+    const jobColumns = this.#database.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>
+    const jobMigrations = [
+      ['source_speed_bytes_per_second', 'INTEGER'],
+      ['yandex_upload_speed_bytes_per_second', 'INTEGER'],
+      ['bottleneck', 'TEXT'],
+      ['buffered_bytes', 'INTEGER'],
+      ['buffer_capacity_bytes', 'INTEGER'],
+      ['upload_request_ms', 'INTEGER'],
+      ['upload_write_blocked_ms', 'INTEGER'],
+    ] as const
+    for (const [column, type] of jobMigrations) {
+      if (!jobColumns.some((entry) => entry.name === column)) {
+        this.#database.exec(`ALTER TABLE jobs ADD COLUMN ${column} ${type}`)
+      }
+    }
     const jobFileColumns = this.#database.prepare('PRAGMA table_info(job_files)').all() as Array<{ name: string }>
     if (!jobFileColumns.some((column) => column.name === 'source_checkpoint')) {
       this.#database.exec('ALTER TABLE job_files ADD COLUMN source_checkpoint TEXT')
@@ -187,7 +218,11 @@ export class JobDatabase {
     const mapping: Record<keyof JobPatch, string> = {
       sourceLabel: 'source_label', title: 'title', destination: 'destination', destinationPath: 'destination_path',
       status: 'status', progress: 'progress', bytesTransferred: 'bytes_transferred', totalBytes: 'total_bytes',
-      speedBytesPerSecond: 'speed_bytes_per_second', errorMessage: 'error_message', operationHref: 'operation_href',
+      speedBytesPerSecond: 'speed_bytes_per_second', sourceSpeedBytesPerSecond: 'source_speed_bytes_per_second',
+      yandexUploadSpeedBytesPerSecond: 'yandex_upload_speed_bytes_per_second', bottleneck: 'bottleneck',
+      bufferedBytes: 'buffered_bytes', bufferCapacityBytes: 'buffer_capacity_bytes',
+      uploadRequestMs: 'upload_request_ms', uploadWriteBlockedMs: 'upload_write_blocked_ms',
+      errorMessage: 'error_message', operationHref: 'operation_href',
     }
     for (const [key, column] of Object.entries(mapping) as [keyof JobPatch, string][]) {
       if (Object.hasOwn(patch, key)) {
@@ -259,7 +294,10 @@ export class JobDatabase {
     const canPause = job.status === 'queued'
       || (job.sourceKind !== 'direct-url' && ['transferring', 'verifying'].includes(job.status))
     if (!canPause) throw new JobConflictError('Эту загрузку сейчас нельзя приостановить')
-    const updated = this.updateJob(id, { status: 'paused', speedBytesPerSecond: 0 })
+    const updated = this.updateJob(id, {
+      status: 'paused', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
+      yandexUploadSpeedBytesPerSecond: 0, bottleneck: null, bufferedBytes: 0,
+    })
     this.addEvent(id, 'info', 'Загрузка приостановлена')
     return updated
   }
@@ -267,7 +305,10 @@ export class JobDatabase {
   resumeJob(id: string): InternalJob {
     const job = requireJob(this.getInternalJob(id))
     if (!['paused', 'failed'].includes(job.status)) throw new JobConflictError('Эту задачу нельзя продолжить')
-    const updated = this.updateJob(id, { status: 'queued', errorMessage: null, speedBytesPerSecond: 0 })
+    const updated = this.updateJob(id, {
+      status: 'queued', errorMessage: null, speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
+      yandexUploadSpeedBytesPerSecond: 0, bottleneck: null, bufferedBytes: 0,
+    })
     this.addEvent(id, 'info', job.status === 'failed' ? 'Загрузка возвращена в очередь' : 'Загрузка продолжена')
     return updated
   }
@@ -277,7 +318,10 @@ export class JobDatabase {
     const canCancel = ['queued', 'paused', 'failed'].includes(job.status)
       || (job.sourceKind !== 'direct-url' && ['transferring', 'verifying'].includes(job.status))
     if (!canCancel) throw new JobConflictError('Активный удалённый импорт нельзя безопасно отменить через API Яндекс Диска')
-    const updated = this.updateJob(id, { status: 'cancelled', speedBytesPerSecond: 0 })
+    const updated = this.updateJob(id, {
+      status: 'cancelled', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
+      yandexUploadSpeedBytesPerSecond: 0, bottleneck: null, bufferedBytes: 0,
+    })
     this.addEvent(id, 'info', 'Загрузка отменена')
     return updated
   }
@@ -319,7 +363,12 @@ function toPublicJob(row: JobRow, files: JobFile[]): Job {
     id: row.id, sourceKind: row.source_kind, sourceLabel: row.source_label, title: row.title,
     destination: row.destination, destinationPath: row.destination_path, status: row.status,
     progress: row.progress, bytesTransferred: row.bytes_transferred, totalBytes: row.total_bytes,
-    speedBytesPerSecond: row.speed_bytes_per_second, errorMessage: row.error_message,
+    speedBytesPerSecond: row.speed_bytes_per_second,
+    sourceSpeedBytesPerSecond: row.source_speed_bytes_per_second,
+    yandexUploadSpeedBytesPerSecond: row.yandex_upload_speed_bytes_per_second,
+    bottleneck: row.bottleneck, bufferedBytes: row.buffered_bytes, bufferCapacityBytes: row.buffer_capacity_bytes,
+    uploadRequestMs: row.upload_request_ms, uploadWriteBlockedMs: row.upload_write_blocked_ms,
+    errorMessage: row.error_message,
     files: files.map(toPublicFile), createdAt: row.created_at, updatedAt: row.updated_at,
   }
 }

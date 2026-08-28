@@ -28,9 +28,9 @@ Cache ограничивается по bytes, резерву свободног
 
 **Статус:** принято и подтверждено реальным API.
 
-Основной uploader — один непрерывный PUT. После неоднозначного обрыва нельзя доверять local progress и нельзя повторять последний диапазон: это даёт `412`.
+Основной uploader передаёт последовательные диапазоны по 8 МиБ. Каждый `202/201` становится durable checkpoint; локальный progress меняется только после ответа Yandex. Один непрерывный PUT исключён после production-инцидента: соединение трижды оборвалось через 78–121 минут, а неподтверждённый offset откатился к нулю.
 
-Worker poll-ит `HEAD` на тот же upload URL с полными `Etag` (MD5), `Sha256` и `Size`, ждёт стабилизации `Content-Length`, затем отправляет остаток с `Content-Range: bytes offset-(size-1)/size`. 128 MiB forced-disconnect test завершился с корректным size/MD5 и без staging.
+Worker poll-ит `HEAD` на тот же upload URL с полными `Etag` (MD5), `Sha256` и `Size`, ждёт стабилизации `Content-Length`, затем продолжает с точного server offset. Реальный API test `3 × 8 МиБ` вернул `202/202/201`, итоговый size/MD5 совпал. Перед каждым PUT source независимо заполняет bounded RAM-buffer максимум 8 МиБ; полного staging нет.
 
 Upload URL, source offset, hashes и job state должны храниться как чувствительный checkpoint. Временный URL не выводится в UI/logs.
 
@@ -46,11 +46,13 @@ Loader сверяет удалённые `size` и `md5`, если их возв
 
 Loader транспортирует исходный файл. Video-page source на первом этапе допустим только при наличии прямого progressive media URL без крупного merge/staging.
 
-## D-007 — VLC получает временную ссылку Yandex напрямую
+## D-007 — VLC получает каталог `/Media` через read-only WebDAV
 
-**Статус:** архитектурный seam, реализация позже.
+**Статус:** реализовано; SFTP оставлен дополнительным transport.
 
-Storage layer должна уметь запрашивать краткоживущую download URL. Предпочтительный data path playback: `Yandex Disk -> VLC`; Loader proxy разрешён только как fallback. Будущий раздел `Library` читает `/Media/Movies` и `/Media/TV`, но не входит в текущий этап.
+Единый production URL `/vlc/` публикует `/Media` через HTTPS WebDAV с отдельной Basic-auth учётной записью. `PROPFIND` перечисляет папки, `GET`/`HEAD` поддерживают byte ranges. Loader получает краткоживущую download URL официальным Disk API, строго валидирует Yandex host и передаёт response stream без дискового медиакеша. Запись, удаление, переименование и WebDAV depth infinity запрещены.
+
+Отдельный SFTP-процесс реализует тот же read-only root и bounded range reads: максимум 8 подключений, 16 одновременных чтений по 256 КиБ на session. Он проверен локально, но UFW с `DEFAULT_INPUT_POLICY=DROP` не пропускает внешний TCP 2022 без root-доступа. Поэтому общий путь для устройств — WebDAV на уже открытом TLS 443. Данные playback проходят через VPS; это fallback к будущему прямому открытию временной Yandex URL, но полного staging нет.
 
 ## D-008 — Production stack: Node/TypeScript, Fastify, React PWA, SQLite
 
@@ -74,7 +76,7 @@ Yandex resume HEAD требует full MD5/SHA-256/size, а torrent metadata о�
 
 **Статус:** реализовано, live torrent/restart E2E ещё нужен.
 
-Direct URL использует Yandex remote import. Magnet и `.torrent` создают executable job: metadata -> safe media selection -> bounded hash-pass -> continuous Yandex PUT -> HEAD resume -> metadata verification. Multi-file state и upload URL сохраняются per-file в SQLite.
+Direct URL использует Yandex remote import. Magnet и `.torrent` создают executable job: metadata -> safe media selection -> bounded hash-pass -> 8-МиБ Yandex ranges -> HEAD resume -> metadata verification. Multi-file state и upload URL сохраняются per-file в SQLite.
 
 Активная remote-import operation не получает фиктивные pause/cancel semantics. Эти действия доступны только до запуска либо после retryable failure. UI показывает фактическое ограничение.
 
@@ -83,3 +85,21 @@ Direct URL использует Yandex remote import. Magnet и `.torrent` со�
 **Статус:** принято и реализовано.
 
 Исходный layout сохранён: sidebar, source composer, status tabs, table/list и detail panel. Обновление не добавляет отдельные dashboard/library sections. UI не показывает fake progress для remote import, не возвращает source query клиенту и не выводит operation/upload URL. Desktop/mobile используют один React component model и реальные API/SSE snapshots.
+
+## D-013 — Rutube не обрабатывается как direct URL
+
+**Статус:** реализовано и проверено на пользовательской ссылке.
+
+HTML-страница Rutube не передаётся в Yandex remote import. Resolver извлекает video id, обращается к официальному `api/play/options/{id}/`, выбирает HLS не выше 720p и принимает только конечный незашифрованный MPEG-TS playlist без discontinuity, byte-range и fMP4 map.
+
+Worker сначала последовательно вычисляет MD5/SHA-256 и размеры сегментов, затем читает и передаёт 8-МиБ диапазоны. В SQLite сохраняется компактный checkpoint размеров, поэтому после рестарта точный Yandex server offset сопоставляется сегменту без повторного HEAD-сканирования 1924 объектов. В каждый момент в памяти находится не более одного bounded range; полного файла на VPS нет. Pause/cancel/resume используют тот же abort-aware job lifecycle, что torrent.
+
+## D-014 — Source и Yandex throughput измеряются раздельно
+
+**Статус:** реализовано после production-профилирования.
+
+Старый `speed` измерял скорость demand-driven source iterator под downstream backpressure и смешивал источник с upload. Он не мог достоверно назвать узкое место.
+
+Production-замер пользовательского Rutube показал 39.8 МиБ/с на 72 HLS GET и 126–128 КиБ/с на Yandex PUT. Для 32 МиБ Yandex TCP receive window ограничивал socket 98.8% времени; из 128 writes по 256 КиБ два блокировались более секунды, максимум 31.8 с. В range test тело каждого 8-МиБ PUT уходило за 0.05–0.20 с, а ответ Yandex ожидался 63.9–66.1 с. Искусственного throttling в Loader нет.
+
+Теперь source сначала заполняет отдельный 8-МиБ RAM-buffer, затем измеряется полный Yandex request до `202/201`. SQLite/API/UI хранят и показывают `Source Speed`, `Yandex Upload Speed`, определённый по их сравнению `Bottleneck`, заполнение буфера, длительность последнего PUT и суммарный write wait. Progress/ETA используют только подтверждённые Yandex bytes и effective upload speed.

@@ -12,6 +12,7 @@ export type JobStatus =
   | 'cancelled'
 
 export type JobFileStatus = 'pending' | 'hashing' | 'transferring' | 'completed' | 'failed'
+export type TransferBottleneck = 'source' | 'yandex' | 'balanced'
 
 export interface JobFile {
   id: string
@@ -35,6 +36,13 @@ export interface Job {
   bytesTransferred: number | null
   totalBytes: number | null
   speedBytesPerSecond: number | null
+  sourceSpeedBytesPerSecond: number | null
+  yandexUploadSpeedBytesPerSecond: number | null
+  bottleneck: TransferBottleneck | null
+  bufferedBytes: number | null
+  bufferCapacityBytes: number | null
+  uploadRequestMs: number | null
+  uploadWriteBlockedMs: number | null
   errorMessage: string | null
   files: JobFile[]
   createdAt: string

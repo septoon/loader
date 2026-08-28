@@ -8,7 +8,7 @@ import { BoundedPieceStore } from './bounded-piece-store.js'
 import { JobDatabase, type InternalJob, type InternalJobFile } from './database.js'
 import { selectTorrentFiles } from './security.js'
 import {
-  bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBuffer, uploadChunkBytes,
+  bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBufferWithRetry, uploadChunkBytes,
 } from './transfer-buffer.js'
 import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
 
@@ -183,15 +183,10 @@ export class TorrentTransfer {
 
       const length = Math.min(uploadChunkBytes, file.size - offset)
       const buffered = createBufferedBytesReporter(jobId, length, this.database, this.notify)
-      const sourceProgress = createSourceSpeedReporter(jobId, offset, this.database, this.notify)
-      const sourceStarted = performance.now()
-      const buffer = await readExactBuffer(
-        readTorrentFile(
-          torrent,
-          torrentFile,
-          offset,
-          signal,
-          sourceProgress,
+      const sourceRead = await readExactBufferWithRetry(
+        () => readTorrentFile(
+          torrent, torrentFile, offset, signal,
+          createSourceSpeedReporter(jobId, offset, this.database, this.notify),
           this.config.torrentMetadataTimeoutMs,
           () => {
             this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source' })
@@ -199,9 +194,17 @@ export class TorrentTransfer {
           },
         ),
         length,
+        signal,
         buffered,
+        async (attempt) => {
+          this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source', bufferedBytes: 0 })
+          this.database.addEvent(jobId, 'info', `Источник torrent прервался, повтор ${attempt}/3 с ${formatBytes(offset)}`)
+          this.notify()
+          await delay(400 * (2 ** (attempt - 1)), signal)
+        },
       )
-      const sourceSpeed = bytesPerSecond(length, performance.now() - sourceStarted)
+      const buffer = sourceRead.buffer
+      const sourceSpeed = bytesPerSecond(length, sourceRead.readMs)
       const beforeUpload = this.database.getInternalJob(jobId)
       this.database.updateJob(jobId, {
         sourceSpeedBytesPerSecond: sourceSpeed,

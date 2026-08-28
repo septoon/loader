@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createMeasuredUploadBody, detectBottleneck, readExactBuffer } from './transfer-buffer.js'
+import {
+  createMeasuredUploadBody, detectBottleneck, readExactBuffer, readExactBufferWithRetry,
+} from './transfer-buffer.js'
 
 test('bounded transfer buffer читает ровно заданный диапазон', async () => {
   async function * source() {
@@ -9,6 +11,22 @@ test('bounded transfer buffer читает ровно заданный диап�
   }
   assert.equal((await readExactBuffer(source(), 6)).toString(), 'abcdef')
   await assert.rejects(() => readExactBuffer(source(), 10), /раньше диапазона/u)
+})
+
+test('bounded source повторяет оборванный диапазон с той же отметки', async () => {
+  let calls = 0
+  const retries: number[] = []
+  const result = await readExactBufferWithRetry(() => {
+    calls += 1
+    return (async function * () {
+      yield Buffer.from(calls === 1 ? 'ab' : 'abcdef')
+      if (calls === 1) throw new Error('terminated')
+    })()
+  }, 6, new AbortController().signal, undefined, (attempt) => retries.push(attempt))
+  assert.equal(result.buffer.toString(), 'abcdef')
+  assert.deepEqual(retries, [1])
+  assert.equal(calls, 2)
+  assert.ok(result.readMs >= 0)
 })
 
 test('upload body отдаёт bounded buffer блоками и собирает wait-метрики', async () => {

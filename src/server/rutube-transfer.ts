@@ -4,7 +4,7 @@ import type { AppConfig } from './config.js'
 import { JobDatabase, type InternalJob, type InternalJobFile } from './database.js'
 import { resolveRutubeSource, rutubeRequestHeaders, type RutubeSegment } from './rutube.js'
 import {
-  bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBuffer, uploadChunkBytes,
+  bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBufferWithRetry, uploadChunkBytes,
 } from './transfer-buffer.js'
 import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
 
@@ -145,14 +145,23 @@ export class RutubeTransfer {
 
         const length = Math.min(uploadChunkBytes, file.size - offset)
         const buffered = createBufferedBytesReporter(job.id, length, this.database, this.notify)
-        const sourceProgress = createSourceProgressReporter(job.id, offset, this.database, this.notify)
-        const sourceStarted = performance.now()
-        const buffer = await readExactBuffer(
-          readSegments(source.segments, segmentSizes, file.size, job.source, offset, controller.signal, sourceProgress),
+        const sourceRead = await readExactBufferWithRetry(
+          () => readSegments(
+            source.segments, segmentSizes, file.size, job.source, offset, controller.signal,
+            createSourceProgressReporter(job.id, offset, this.database, this.notify),
+          ),
           length,
+          controller.signal,
           buffered,
+          async (attempt) => {
+            this.database.updateJob(job.id, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source', bufferedBytes: 0 })
+            this.database.addEvent(job.id, 'info', `Поток Rutube прервался, повтор ${attempt}/3 с ${formatBytes(offset)}`)
+            this.notify()
+            await delay(400 * (2 ** (attempt - 1)), controller.signal)
+          },
         )
-        const sourceSpeed = bytesPerSecond(length, performance.now() - sourceStarted)
+        const buffer = sourceRead.buffer
+        const sourceSpeed = bytesPerSecond(length, sourceRead.readMs)
         const beforeUpload = this.database.getInternalJob(job.id)
         this.database.updateJob(job.id, {
           sourceSpeedBytesPerSecond: sourceSpeed,

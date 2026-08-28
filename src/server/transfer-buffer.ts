@@ -12,6 +12,11 @@ export interface UploadBodyMetrics {
   writeCount: number
 }
 
+export interface BufferedSourceResult {
+  buffer: Buffer
+  readMs: number
+}
+
 export async function readExactBuffer(
   source: AsyncIterable<Buffer>,
   length: number,
@@ -28,6 +33,32 @@ export async function readExactBuffer(
     if (written === length) return buffer
   }
   throw new Error(`Источник завершился раньше диапазона: осталось ${length - written} байт`)
+}
+
+export async function readExactBufferWithRetry(
+  createSource: () => AsyncIterable<Buffer>,
+  length: number,
+  signal: AbortSignal,
+  onBufferedBytes?: (bytes: number) => void,
+  onRetry?: (attempt: number, error: unknown) => Promise<void> | void,
+  maxAttempts = 4,
+): Promise<BufferedSourceResult> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    signal.throwIfAborted()
+    onBufferedBytes?.(0)
+    const started = performance.now()
+    try {
+      const buffer = await readExactBuffer(createSource(), length, onBufferedBytes)
+      return { buffer, readMs: performance.now() - started }
+    } catch (error) {
+      signal.throwIfAborted()
+      lastError = error
+      if (attempt === maxAttempts) break
+      await onRetry?.(attempt, error)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Источник не вернул диапазон после повторов')
 }
 
 export function createMeasuredUploadBody(

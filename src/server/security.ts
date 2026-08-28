@@ -5,6 +5,9 @@ import ipaddr from 'ipaddr.js'
 import type { Destination, SourceAnalysis } from '../shared/types.js'
 import { destinations } from '../shared/types.js'
 import { getRutubeVideoId, resolveRutubeSource, RutubeSourceError } from './rutube.js'
+import {
+  getVkVideoId, isVkVideoHost, resolveVkVideoSource, VkVideoSourceError, type VkVideoSource,
+} from './vk-video.js'
 
 const destinationRoots: Record<Destination, string> = {
   auto: '/Media/Unsorted',
@@ -13,7 +16,12 @@ const destinationRoots: Record<Destination, string> = {
   unsorted: '/Media/Unsorted',
 }
 
-export async function analyzeSource(sourceValue: string, destinationValue: string): Promise<SourceAnalysis> {
+export async function analyzeSource(
+  sourceValue: string,
+  destinationValue: string,
+  resolveVkVideo: (source: string) => Promise<VkVideoSource> = resolveVkVideoSource,
+  validateHost: (hostname: string) => Promise<void> = assertPublicHost,
+): Promise<SourceAnalysis> {
   const source = sourceValue.trim()
   const destination = parseDestination(destinationValue)
   if (!source || source.length > 8_192) {
@@ -58,15 +66,36 @@ export async function analyzeSource(sourceValue: string, destinationValue: strin
     throw new InputError('Нестандартный порт источника запрещён')
   }
 
-  await assertPublicHost(sourceUrl.hostname)
+  await validateHost(sourceUrl.hostname)
+  if (isVkVideoHost(sourceUrl.hostname)) {
+    const identifier = getVkVideoId(sourceUrl)
+    if (!identifier) throw new InputError('Укажите ссылку на отдельное видео VK')
+    try {
+      const resolved = await resolveVkVideo(identifier.canonicalSource)
+      const resolvedDestination = inferVideoDestination(destination, resolved.title)
+      const title = sanitizeFileName(`${resolved.title}.mp4`)
+      return {
+        source: resolved.canonicalSource,
+        sourceKind: 'vkvideo',
+        sourceLabel: `VK Видео · ${resolved.id}`,
+        title,
+        destination: resolvedDestination,
+        destinationPath: buildDestinationPath(resolvedDestination, title),
+        supported: true,
+        note: `${resolved.resolution}, ${formatDuration(resolved.durationSeconds)} · защищённый поток без сохранения на VPS`,
+        ...(resolved.totalBytes ? { totalBytes: resolved.totalBytes } : {}),
+      }
+    } catch (error) {
+      if (error instanceof VkVideoSourceError) throw new InputError(error.message)
+      throw error
+    }
+  }
   const rutubeHost = ['rutube.ru', 'www.rutube.ru'].includes(sourceUrl.hostname.toLowerCase().replace(/\.$/, ''))
   if (rutubeHost) {
     if (!getRutubeVideoId(sourceUrl)) throw new InputError('Укажите ссылку на отдельное видео Rutube')
     try {
       const resolved = await resolveRutubeSource(sourceUrl.href)
-      const resolvedDestination: Destination = destination === 'auto'
-        ? /(?:^|\W)(?:s\d{1,2}(?:e\d{1,3})?|season|сезон|выпуск)(?:\W|$)/iu.test(resolved.title) ? 'tv' : 'movies'
-        : destination
+      const resolvedDestination = inferVideoDestination(destination, resolved.title)
       const title = sanitizeFileName(`${resolved.title}.ts`)
       return {
         source: sourceUrl.href,
@@ -229,6 +258,11 @@ function isSample(value: string): boolean {
 function inferTorrentDestination(name: string, videos: TorrentFileDescriptor[]): Destination {
   if (videos.length > 1 || /(?:^|\W)(?:s\d{1,2}(?:e\d{1,3})?|season|сезон)(?:\W|$)/iu.test(name)) return 'tv'
   return 'movies'
+}
+
+function inferVideoDestination(destination: Destination, title: string): Destination {
+  if (destination !== 'auto') return destination
+  return /(?:^|\W)(?:s\d{1,2}(?:e\d{1,3})?|season|сезон|выпуск)(?:\W|$)/iu.test(title) ? 'tv' : 'movies'
 }
 
 function decodePathname(value: string): string {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { HealthResponse, Job } from '../shared/types'
-import { getHealth, getJobs, getSession, login } from './api'
+import { getHealth, getJobs, getSession, login, logout } from './api'
 import { Brand } from './components/Brand'
 import { Icon } from './components/Icon'
 import { JobsPanel } from './components/JobsPanel'
@@ -76,10 +76,10 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
       <header className="page-header">
         <div className="mobile-brand"><Brand /></div>
         <div className="page-heading"><h1 id="add-heading">Добавить загрузку</h1><p>Ссылка, магнет или .torrent — сразу на Яндекс Диск</p></div>
-        <div className={health?.storageConfigured ? 'connection-status is-connected' : 'connection-status'}>
+        <button className={health?.storageConfigured ? 'connection-status is-connected' : 'connection-status'} type="button" onClick={() => setSettingsOpen(true)}>
           <span className="connection-mark"><Icon name={health?.storageConfigured ? 'cloud' : 'warning'} /></span>
           <span>{health?.storageConfigured ? 'Яндекс Диск подключён' : 'Яндекс Диск не настроен'}</span>
-        </div>
+        </button>
       </header>
       <SourceComposer disabled={!health?.storageConfigured} onCreated={() => void refresh()} onError={setError} />
       {loading
@@ -87,11 +87,11 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
         : <JobsPanel jobs={jobs} filter={filter} onFilterChange={setFilter} onChanged={() => void refresh()} onError={setError} />}
     </main>
     {error && <div className="toast" role="alert"><Icon name="warning"/><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Закрыть"><Icon name="cancel"/></button></div>}
-    {settingsOpen && <ServicePanel health={health} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && <ServicePanel health={health} onClose={() => setSettingsOpen(false)} onLoggedOut={onLoggedOut} />}
   </div>
 }
 
-function ServicePanel({ health, onClose }: { health: HealthResponse | null, onClose: () => void }) {
+function ServicePanel({ health, onClose, onLoggedOut }: { health: HealthResponse | null, onClose: () => void, onLoggedOut: () => void }) {
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', closeOnEscape)
@@ -107,7 +107,10 @@ function ServicePanel({ health, onClose }: { health: HealthResponse | null, onCl
         <div><dt>Активных передач</dt><dd>{health?.activeTransfers ?? 0}</dd></div>
       </dl>
       <p>Прямые ссылки импортирует Яндекс Диск. Торренты передаются последовательно через ограниченный кеш VPS и поддерживают продолжение после разрыва.</p>
-      <button className="button button-primary" type="button" onClick={onClose}>Готово</button>
+      <div className="service-actions">
+        <button className="button button-secondary" type="button" onClick={() => void logout().finally(onLoggedOut)}>Выйти</button>
+        <button className="button button-primary" type="button" onClick={onClose}>Готово</button>
+      </div>
     </section>
   </div>
 }

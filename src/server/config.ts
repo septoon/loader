@@ -17,10 +17,13 @@ export interface AppConfig {
   diskReserveBytes: number
   torrentMetadataTimeoutMs: number
   uploadTimeoutMs: number
+  publicUrl: string
+  ytDlpPath: string
 }
 
 export function loadConfig(root = process.cwd()): AppConfig {
   const production = process.env.NODE_ENV === 'production'
+  const port = parsePort(process.env.LOADER_PORT)
   const password = process.env.LOADER_PASSWORD?.trim() || (production ? '' : 'loader-local')
   const sessionSecret = process.env.LOADER_SESSION_SECRET?.trim()
     || (production ? '' : randomBytes(32).toString('hex'))
@@ -34,7 +37,7 @@ export function loadConfig(root = process.cwd()): AppConfig {
 
   return {
     host: process.env.LOADER_HOST?.trim() || '127.0.0.1',
-    port: parsePort(process.env.LOADER_PORT),
+    port,
     databasePath: path.resolve(root, process.env.LOADER_DATABASE_PATH || 'runtime/data/loader.db'),
     webRoot: path.resolve(root, 'dist/web'),
     password,
@@ -47,6 +50,8 @@ export function loadConfig(root = process.cwd()): AppConfig {
     diskReserveBytes: parseMiB(process.env.LOADER_DISK_RESERVE_MIB, 1_024) * 1024 * 1024,
     torrentMetadataTimeoutMs: parseMinutes(process.env.LOADER_TORRENT_METADATA_TIMEOUT_MIN, 10),
     uploadTimeoutMs: parseMinutes(process.env.LOADER_UPLOAD_TIMEOUT_MIN, 360),
+    publicUrl: parsePublicUrl(process.env.LOADER_PUBLIC_URL, port, production),
+    ytDlpPath: parseExecutablePath(process.env.LOADER_YT_DLP_PATH),
   }
 }
 
@@ -73,6 +78,26 @@ function parseMinutes(value: string | undefined, fallback: number): number {
     throw new Error('Тайм-аут должен быть целым числом от 1 до 1440 минут')
   }
   return parsed * 60_000
+}
+
+function parsePublicUrl(value: string | undefined, port: number, production: boolean): string {
+  const candidate = value?.trim() || `http://127.0.0.1:${port}`
+  const url = new URL(candidate)
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+    throw new Error('LOADER_PUBLIC_URL должен содержать только origin без пути и учётных данных')
+  }
+  if (production ? url.protocol !== 'https:' : !['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('LOADER_PUBLIC_URL должен использовать HTTPS в production')
+  }
+  return url.origin
+}
+
+function parseExecutablePath(value: string | undefined): string {
+  const executablePath = value?.trim() || 'yt-dlp'
+  if (executablePath.length > 1_024 || executablePath.includes('\u0000')) {
+    throw new Error('LOADER_YT_DLP_PATH имеет неверный формат')
+  }
+  return executablePath
 }
 
 function loadYandexToken(root: string): string | null {

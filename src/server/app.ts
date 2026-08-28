@@ -15,6 +15,8 @@ import { JobRunner } from './job-runner.js'
 import type { MediaCredentials } from './media-secrets.js'
 import { registerMediaWebDav } from './media-webdav.js'
 import { analyzeSource, InputError, sanitizePublicError, selectTorrentFiles } from './security.js'
+import { registerVkVideoRelay } from './vk-relay.js'
+import { resolveVkVideoSource } from './vk-video.js'
 import type { YandexMediaLibrary } from './yandex-media-library.js'
 
 const sessionCookie = 'loader_session'
@@ -88,13 +90,14 @@ export async function buildApp({ config, database, runner, media }: Dependencies
     if (!isAuthenticated(request)) return reply.code(401).send({ error: 'Требуется вход' })
   })
 
+  registerVkVideoRelay(app, database, config)
   if (media) registerMediaWebDav(app, media.library, media.credentials)
 
   app.post<{ Body: { source?: string, destination?: Destination } }>('/api/sources/analyze', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     try {
-      return await analyzeSource(request.body?.source ?? '', request.body?.destination ?? 'auto')
+      return await analyzeConfiguredSource(request.body?.source ?? '', request.body?.destination ?? 'auto')
     } catch (error) {
       return sendKnownError(reply, error)
     }
@@ -117,7 +120,7 @@ export async function buildApp({ config, database, runner, media }: Dependencies
     config: { rateLimit: { max: 15, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     try {
-      const analysis = await analyzeSource(request.body?.source ?? '', request.body?.destination ?? 'auto')
+      const analysis = await analyzeConfiguredSource(request.body?.source ?? '', request.body?.destination ?? 'auto')
       if (!analysis.supported) return reply.code(422).send({ error: analysis.note })
       const job = database.createJob(analysis)
       runner.notify(job)
@@ -199,6 +202,12 @@ export async function buildApp({ config, database, runner, media }: Dependencies
   }
 
   return app
+
+  function analyzeConfiguredSource(source: string, destination: Destination) {
+    return analyzeSource(source, destination, (value) => {
+      return resolveVkVideoSource(value, { executablePath: config.ytDlpPath })
+    })
+  }
 
   function isAuthenticated(request: FastifyRequest): boolean {
     const signed = request.cookies[sessionCookie]

@@ -31,6 +31,8 @@ const environment = [
   'LOADER_DISK_RESERVE_MIB=1024',
   'LOADER_TORRENT_METADATA_TIMEOUT_MIN=10',
   'LOADER_UPLOAD_TIMEOUT_MIN=360',
+  'LOADER_PUBLIC_URL=https://loader.lumastack.ru',
+  'LOADER_YT_DLP_PATH=/home/deploy/loader/shared/tools/yt-dlp/bin/yt-dlp',
   '',
 ].join('\n')
 

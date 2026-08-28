@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events'
-import type { Job } from '../shared/types.js'
+import { isRemoteImportSource, type Job } from '../shared/types.js'
 import type { AppConfig } from './config.js'
 import { JobDatabase, type InternalJob } from './database.js'
 import { sanitizePublicError } from './security.js'
 import { RutubeTransfer } from './rutube-transfer.js'
 import { TorrentTransfer } from './torrent-transfer.js'
+import { buildVkRelayUrl } from './vk-relay.js'
 import { YandexDiskAdapter } from './yandex-disk.js'
 
 export class JobRunner {
@@ -17,7 +18,7 @@ export class JobRunner {
   constructor(
     private readonly database: JobDatabase,
     private readonly storage: YandexDiskAdapter | null,
-    config: AppConfig,
+    private readonly config: AppConfig,
   ) {
     this.#torrent = storage
       ? new TorrentTransfer(database, storage, config, () => this.notify())
@@ -97,7 +98,7 @@ export class JobRunner {
       return
     }
 
-    if (job.sourceKind !== 'direct-url') {
+    if (!isRemoteImportSource(job.sourceKind)) {
       try {
         await this.#torrent!.process(job)
       } catch (error) {
@@ -112,9 +113,12 @@ export class JobRunner {
       let operationHref = job.operationHref
       if (job.status === 'queued') {
         this.database.updateJob(job.id, { status: 'transferring', progress: null, errorMessage: null })
-        this.database.addEvent(job.id, 'info', 'Яндекс Диск начал прямой импорт')
+        this.database.addEvent(job.id, 'info', job.sourceKind === 'vkvideo'
+          ? 'Яндекс Диск начал импорт VK Видео через защищённый поток'
+          : 'Яндекс Диск начал прямой импорт')
         this.notify(this.database.getJob(job.id) ?? undefined)
-        operationHref = await this.storage.startRemoteImport(job.source, job.destinationPath)
+        const remoteSource = job.sourceKind === 'vkvideo' ? buildVkRelayUrl(this.config, job.id) : job.source
+        operationHref = await this.storage.startRemoteImport(remoteSource, job.destinationPath)
         this.database.updateJob(job.id, { operationHref })
       }
 
@@ -164,6 +168,6 @@ export class JobRunner {
 
   private abortTransfer(job: InternalJob): void {
     if (job.sourceKind === 'rutube') this.#rutube?.abort(job.id)
-    else if (job.sourceKind !== 'direct-url') this.#torrent?.abort(job.id)
+    else if (!isRemoteImportSource(job.sourceKind)) this.#torrent?.abort(job.id)
   }
 }

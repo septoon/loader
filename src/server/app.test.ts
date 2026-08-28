@@ -20,6 +20,7 @@ test('authenticated API анализирует magnet и multipart .torrent', as
     torrentMetadataDir: path.join(root, 'torrents'), pieceCacheDir: path.join(root, 'cache'),
     pieceCacheMaxBytes: 32 * 1024 * 1024, diskReserveBytes: 16 * 1024 * 1024,
     torrentMetadataTimeoutMs: 60_000, uploadTimeoutMs: 60_000,
+    publicUrl: 'http://127.0.0.1:8787', ytDlpPath: 'yt-dlp',
   }
   const database = new JobDatabase(config.databasePath)
   const runner = new JobRunner(database, null, config)

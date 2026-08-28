@@ -5,6 +5,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import type {
   Destination, Job, JobEvent, JobFile, JobFileStatus, JobStatus, SourceAnalysis, TransferBottleneck,
 } from '../shared/types.js'
+import { isRemoteImportSource } from '../shared/types.js'
 import type { SelectedTorrentFile } from './security.js'
 
 interface JobRow {
@@ -203,7 +204,7 @@ export class JobDatabase {
   nextRunnableJob(): InternalJob | null {
     const row = this.#database.prepare(`
       SELECT * FROM jobs
-      WHERE (status = 'transferring' AND (operation_href IS NOT NULL OR source_kind != 'direct-url'))
+      WHERE (status = 'transferring' AND (operation_href IS NOT NULL OR source_kind NOT IN ('direct-url', 'vkvideo')))
          OR status = 'verifying'
          OR status = 'queued'
       ORDER BY CASE status WHEN 'transferring' THEN 0 WHEN 'verifying' THEN 1 ELSE 2 END, created_at
@@ -292,7 +293,7 @@ export class JobDatabase {
   pauseJob(id: string): InternalJob {
     const job = requireJob(this.getInternalJob(id))
     const canPause = job.status === 'queued'
-      || (job.sourceKind !== 'direct-url' && ['transferring', 'verifying'].includes(job.status))
+      || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status))
     if (!canPause) throw new JobConflictError('Эту загрузку сейчас нельзя приостановить')
     const updated = this.updateJob(id, {
       status: 'paused', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
@@ -316,7 +317,7 @@ export class JobDatabase {
   cancelJob(id: string): InternalJob {
     const job = requireJob(this.getInternalJob(id))
     const canCancel = ['queued', 'paused', 'failed'].includes(job.status)
-      || (job.sourceKind !== 'direct-url' && ['transferring', 'verifying'].includes(job.status))
+      || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status))
     if (!canCancel) throw new JobConflictError('Активный удалённый импорт нельзя безопасно отменить через API Яндекс Диска')
     const updated = this.updateJob(id, {
       status: 'cancelled', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,

@@ -57,7 +57,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .page-heading { display: grid; gap: 5px; }
 .page-heading p { margin: 0; color: var(--muted); font-size: 13px; }
 .mobile-brand { display: none; }
-.connection-status { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 8px; border: 1px solid #f0cfb7; border-radius: 20px; color: #9b3b16; background: #fff9f4; font-size: 13px; white-space: nowrap; }
+.connection-status { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 8px; border: 1px solid #f0cfb7; border-radius: 20px; color: #9b3b16; background: #fff9f4; font-size: 13px; white-space: nowrap; cursor: pointer; }
 .connection-status.is-connected { border-color: #cce8d9; color: #334b40; background: #f4fbf7; }
 .connection-mark { position: relative; width: 25px; height: 25px; display: grid; place-items: center; color: var(--blue); }
 .connection-mark svg { width: 22px; height: 22px; }
@@ -214,7 +214,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .service-dialog dd.is-ok { color: #168653; }
 .service-dialog dd.is-error { color: var(--danger); }
 .service-dialog > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
-.service-dialog > .button { justify-self: end; min-width: 112px; }
+.service-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.service-actions .button { min-width: 112px; }
 
 @keyframes progress-slide { from { transform: translateX(-110%); } to { transform: translateX(350%); } }
 @keyframes loading-slide { from { transform: translateX(-110%); } to { transform: translateX(350%); } }
@@ -234,17 +235,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 @media (max-width: 800px) {
-  .app-shell { display: block; padding-bottom: 66px; }
-  .sidebar { position: fixed; top: auto; bottom: 0; left: 0; right: 0; width: auto; height: 66px; padding: 5px max(8px, env(safe-area-inset-right)) max(5px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); border: 0; border-top: 1px solid var(--line); flex-direction: row; align-items: stretch; box-shadow: 0 -6px 18px rgba(25,37,53,.06); }
-  .sidebar-brand { display: none; }
-  .sidebar-nav { flex: 1; grid-template-columns: repeat(3, 1fr); gap: 2px; }
-  .sidebar-link { min-height: 52px; justify-content: center; flex-direction: column; gap: 2px; padding: 3px 4px; font-size: 10px; border-radius: 8px; }
-  .sidebar-link svg { width: 21px; height: 21px; }
-  .sidebar-link.is-active { box-shadow: none; }
-  .nav-count { position: absolute; transform: translate(13px, -11px); min-width: 17px; height: 17px; padding: 0 4px; font-size: 9px; }
-  .sidebar-footer { width: 55px; margin: 0; padding: 0; border: 0; display: block; }
-  .sidebar-footer .sidebar-link:first-child { display: none; }
-  .sidebar-footer .sidebar-link:last-child span { display: none; }
+  .app-shell { display: block; }
+  .sidebar { display: none; }
   .main-content { padding: max(18px, env(safe-area-inset-top)) 18px 32px; }
   .page-header { align-items: center; flex-wrap: wrap; min-height: 43px; margin-bottom: 20px; }
   .mobile-brand { display: block; }
@@ -255,13 +247,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .connection-status { margin: 0; font-size: 12px; }
   .source-grid { grid-template-columns: 1fr 126px; gap: 10px; }
   .source-section { padding: 13px; border-radius: 12px; }
-  .source-input { grid-column: 1 / -1; min-height: 86px; }
-  .file-button { grid-column: 1 / -1; grid-row: auto; width: 100%; justify-self: stretch; }
+  .source-input { grid-column: 1 / -1; min-height: 60px; grid-template-rows: 1fr; padding-block: 9px; }
+  .source-input > span { display: none; }
+  .file-button { grid-column: 1; grid-row: auto; width: 100%; height: 50px; justify-self: stretch; padding-inline: 10px; }
   .destination-select { height: 50px; }
-  .source-grid > .button-primary { height: 50px; }
-  .analysis-panel { align-items: flex-start; flex-wrap: wrap; }
-  .analysis-panel .button { width: 100%; }
-  .status-tabs { min-height: 64px; justify-content: space-between; }
+  .source-grid > .button-primary { grid-column: 1 / -1; height: 50px; }
+  .analysis-panel { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; }
+  .analysis-panel .button { grid-column: 1 / -1; width: 100%; }
+  .status-tabs { min-height: 56px; justify-content: space-between; }
+  .status-tab { min-height: 47px; }
   .status-tab { flex: 1; padding-inline: 4px; font-size: 13px; }
   .status-tab.is-active::after { left: 4px; right: 4px; }
   .jobs-head { display: none; }
@@ -290,20 +284,26 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .job-throughput { grid-column: 1; width: min(280px, calc(100% - 40px)); margin: 12px 0 0 40px; gap: 5px; font-size: 12px; }
   .job-actions { grid-column: 1; flex-direction: row; align-items: center; gap: 18px; padding: 14px 8px 0 48px; }
   .job-actions button span { display: inline; }
+  .job:not(.is-expanded) .job-destination,
+  .job:not(.is-expanded) .job-status,
+  .job:not(.is-expanded) .job-throughput,
+  .job:not(.is-expanded) .job-metric,
+  .job:not(.is-expanded) .job-actions { display: none; }
   .job-details { grid-column: 1; display: block; margin-top: 16px; border-top: 1px solid var(--line); }
   .detail-tabs { grid-template-columns: repeat(3, 1fr); padding: 8px; border: 0; border-bottom: 1px solid var(--line); }
   .detail-tabs button { justify-content: center; padding-inline: 5px; }
   .detail-content { padding: 7px 14px 16px; }
   .detail-content dl > div { grid-template-columns: 100px minmax(0, 1fr); padding: 7px 0; }
-  .toast { bottom: 78px; right: 16px; left: 16px; }
-  .jobs-section { border-radius: 12px; }
+  .toast { bottom: 16px; right: 16px; left: 16px; }
+  .jobs-section { margin-top: 16px; border-radius: 12px; }
 }
 
 @media (max-width: 430px) {
   .main-content { padding-inline: 14px; }
   .page-header h1 { font-size: 26px; }
   .connection-status span:last-child { max-width: 100px; white-space: normal; text-align: right; }
-  .source-grid { grid-template-columns: 1fr; }
+  .source-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .source-grid > .button-primary { grid-column: 1 / -1; }
   .destination-select, .source-grid > .button-primary { height: 48px; }
   .status-tab { font-size: 12px; }
   .status-tab span { margin-left: 3px; }

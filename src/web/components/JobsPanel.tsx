@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { Job, JobEvent, JobFileStatus, JobStatus } from '../../shared/types'
+import { isRemoteImportSource, type Job, type JobEvent, type JobFileStatus, type JobStatus } from '../../shared/types'
 import { getJobEvents, mutateJob } from '../api'
 import { type JobFilter, isActive, isFailed } from './Sidebar'
 import { Icon } from './Icon'
@@ -15,9 +15,7 @@ interface JobsPanelProps {
 type DetailTab = 'details' | 'files' | 'log'
 
 export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: JobsPanelProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(
-    jobs.find((job) => ['transferring', 'verifying'].includes(job.status))?.id ?? jobs.find(isActive)?.id ?? null,
-  )
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>('details')
   const [events, setEvents] = useState<Record<string, JobEvent[]>>({})
   const visibleJobs = useMemo(() => {
@@ -94,12 +92,12 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
               <span className="row-expand-mobile"><Icon name="chevron" /></span>
             </button>
             <div className="job-actions" onClick={(event) => event.stopPropagation()}>
-              {(job.status === 'queued' || (job.sourceKind !== 'direct-url' && ['transferring', 'verifying'].includes(job.status)))
+              {(job.status === 'queued' || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)))
                 && <button type="button" onClick={() => void action(job, 'pause')}><Icon name="pause"/><span>Пауза</span></button>}
               {['paused', 'failed'].includes(job.status) && <button type="button" onClick={() => void action(job, 'resume')}><Icon name={job.status === 'failed' ? 'retry' : 'play'}/><span>{job.status === 'failed' ? 'Повторить' : 'Продолжить'}</span></button>}
-              {(['queued', 'paused', 'failed'].includes(job.status) || (job.sourceKind !== 'direct-url' && ['transferring', 'verifying'].includes(job.status)))
+              {(['queued', 'paused', 'failed'].includes(job.status) || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)))
                 && <button className="danger" type="button" onClick={() => void action(job, 'cancel')}><Icon name="cancel"/><span>Отменить</span></button>}
-              {job.sourceKind === 'direct-url' && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
+              {isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
             </div>
             {expanded && <JobDetails job={job} tab={detailTab} events={events[job.id]} onTab={(tab) => void setTab(job, tab)} />}
           </article>
@@ -120,7 +118,7 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
         <div><dt>Назначение</dt><dd>{job.destinationPath}</dd></div>
         <div><dt>Источник</dt><dd>{job.sourceLabel}</dd></div>
         <div><dt>Добавлено</dt><dd>{formatDate(job.createdAt)}</dd></div>
-        <div><dt>Режим</dt><dd>{job.sourceKind === 'direct-url' ? 'Прямой импорт без передачи через сервер' : job.sourceKind === 'rutube' ? 'Rutube HLS → Яндекс Диск без сохранения на VPS' : 'Последовательная передача без сохранения на сервере'}</dd></div>
+        <div><dt>Режим</dt><dd>{modeLabel(job)}</dd></div>
         {job.bufferCapacityBytes !== null && job.bufferCapacityBytes > 0 && <div><dt>Буфер</dt><dd>{formatBytes(job.bufferedBytes ?? 0)} из {formatBytes(job.bufferCapacityBytes)}</dd></div>}
         {job.uploadRequestMs !== null && <div><dt>Последний PUT</dt><dd>{formatDuration(job.uploadRequestMs)} · блокировка write {formatDuration(job.uploadWriteBlockedMs ?? 0)}</dd></div>}
         {job.errorMessage && <div className="error-detail"><dt>Ошибка</dt><dd>{job.errorMessage}</dd></div>}
@@ -131,7 +129,7 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
           <span><strong>{file.relativePath}</strong><small>{formatBytes(file.size)} · {fileStatusLabel(file.status)}</small></span>
           <span>{file.size > 0 ? `${Math.round(file.bytesTransferred / file.size * 100)}%` : '—'}</span>
         </div>)}</div>
-        : <div className="detail-placeholder"><Icon name="files"/><span>{job.sourceKind === 'direct-url' ? 'Один файл передаётся прямым импортом' : job.sourceKind === 'rutube' ? 'Размер файла появится после проверки HLS-потока' : 'Состав файлов появится после получения метаданных'}</span></div>)}
+        : <div className="detail-placeholder"><Icon name="files"/><span>{filesPlaceholder(job)}</span></div>)}
       {tab === 'log' && <div className="event-log">
         {!events && <span>Загрузка журнала…</span>}
         {events?.length === 0 && <span>Событий пока нет</span>}
@@ -186,7 +184,7 @@ function subtitle(job: Job): string {
   if (job.status === 'completed') return 'Сохранено на Яндекс Диске'
   if (job.status === 'failed') return 'Требуется внимание'
   if (job.status === 'cancelled') return 'Отменена'
-  if (job.status === 'verifying') return job.sourceKind === 'direct-url'
+  if (job.status === 'verifying') return isRemoteImportSource(job.sourceKind)
     ? 'Проверка на Яндекс Диске'
     : job.sourceKind === 'rutube' ? 'Проверка потока Rutube' : 'Проверка торрент-источника'
   return 'Передача на Яндекс Диск'
@@ -215,11 +213,24 @@ function formatDuration(milliseconds: number): string {
 }
 
 function bottleneckLabel(job: Job): string {
-  if (job.sourceKind === 'direct-url') return 'Не измеряется'
+  if (isRemoteImportSource(job.sourceKind)) return 'Не измеряется'
   if (job.bottleneck === 'source') return job.sourceKind === 'rutube' ? 'Rutube' : 'Торрент'
   if (job.bottleneck === 'yandex') return 'Яндекс Диск'
   if (job.bottleneck === 'balanced') return 'Баланс'
   return '—'
+}
+
+function modeLabel(job: Job): string {
+  if (job.sourceKind === 'direct-url') return 'Прямой импорт без передачи через сервер'
+  if (job.sourceKind === 'vkvideo') return 'VK Видео → защищённый поток → Яндекс Диск без сохранения на VPS'
+  if (job.sourceKind === 'rutube') return 'Rutube HLS → Яндекс Диск без сохранения на VPS'
+  return 'Последовательная передача без сохранения на сервере'
+}
+
+function filesPlaceholder(job: Job): string {
+  if (isRemoteImportSource(job.sourceKind)) return 'Один файл передаётся удалённым импортом'
+  if (job.sourceKind === 'rutube') return 'Размер файла появится после проверки HLS-потока'
+  return 'Состав файлов появится после получения метаданных'
 }
 
 function fileStatusLabel(status: JobFileStatus): string {

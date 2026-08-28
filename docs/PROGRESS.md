@@ -1,5 +1,35 @@
 # Progress
 
+## 2026-08-28 — Rutube/Yandex bottleneck, checkpointed upload и VLC `/Media`
+
+Пользовательская Rutube-задача `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` установила реальную причину неработающей передачи. Один PUT на `1,390,208,864` bytes трижды оборвался через 78–121 минут; upload session не подтвердила локальный offset, поэтому worker начинал с нуля и в итоге получил `fetch failed`.
+
+Production-профиль выполнен до изменения транспорта:
+
+- 72 HLS GET из начала/середины/конца: `62,064,064` bytes за `1.487 s`, source `39.8 MiB/s`;
+- один 8-MiB Yandex PUT: `64.782 s`, `126.5 KiB/s`; 32 writes по 256 KiB, максимальная write pause `30.2 ms`;
+- один 32-MiB Yandex PUT: `256.853 s`, `127.6 KiB/s`; TCP `rwnd_limited=98.8%`, два writes более 1 s, максимум `31.805 s`;
+- реальный `Content-Range 3 × 8 MiB`: ответы `202/202/201`, `194.357 s`, `126.4 KiB/s`; body feed `0.05–0.20 s`, ожидание Yandex response `63.9–66.1 s` на range;
+- в Loader нет штатного throttling: задержки 400/750 ms используются только для retry/recovery.
+
+Вывод: источник и сеть VPS не ограничивают текущую передачу; bottleneck — receive/commit pipeline upload endpoint Яндекс Диска. Старое поле «Скорость» смешивало source iterator с downstream backpressure и фактически показывало Yandex limit.
+
+Release `c6fe2c8` (основной checkpointed transport из `6330399` плюс retry оборванного source body):
+
+- Rutube и torrent передают последовательные `Content-Range` максимум по 8 MiB; progress обновляется только после `202/201`;
+- source сначала заполняет отдельный bounded RAM-buffer максимум 8 MiB, поэтому Source Speed и Yandex Upload Speed измеряются независимо;
+- SQLite/API/UI хранят Source Speed, Yandex Upload Speed, Bottleneck, заполнение буфера, полный PUT time и суммарный write wait;
+- pause/resume текущей задачи через production API вернули `200/200`; `HEAD` восстановил точный offset `16,777,216`, без повторного hash-pass и отката к нулю;
+- public health, production assets, authenticated metrics API и WebDAV проверены; `/vlc/` без auth возвращает `401`, authenticated `PROPFIND` перечисляет Movies/TV/Unsorted, range GET возвращает `206` и 64 bytes;
+- после transient `terminated` на `763,363,328` bytes source-range теперь до четырёх раз открывается заново с той же подтверждённой отметки; это применяется и к Rutube, и к torrent;
+- `npm test`: 27/27, server/web typecheck и production build passed; PM2 `loader` и `loader-vlc` используют `c6fe2c8`, zero restarts.
+
+Та же Rutube-задача продолжилась с `763,363,328` bytes без повторной передачи уже принятых частей и завершилась `2026-08-28T10:23:20.759Z`: `1,390,208,864 / 1,390,208,864`, error null. Независимая Disk metadata вернула exact size и MD5 `d85a6dd2049134623e6cbe01a460f7f8`; official download и WebDAV дали `206 bytes 0-563/1390208864`, а TS sync byte равен `0x47` на offsets `0/188/376`. WebDAV `PROPFIND /vlc/TV/` вернул `207` и содержит финальный файл.
+
+Отдельно проверен возможный обход медленного PUT: официальный remote import забрал существующий 16-MiB файл через HTTPS WebDAV/VPS за `6.831 s`, `2,455,993 B/s` (`2.34 MiB/s`) с тем же MD5 — примерно в 18.7 раза быстрее measured PUT. Для обычных direct URL этот путь уже используется. Автоматический Rutube pull-relay пока не включён: без отдельного lifecycle он уберёт достоверный range checkpoint и текущую безопасную pause/resume семантику; результат benchmark зафиксирован для следующего ограниченного изменения.
+
+Два ошибочно импортированных Rutube HTML-файла (`bc99…` и `a843…`) и synthetic `loader-e2e-restart.mp4` перемещены в корзину Яндекс Диска и подтверждены как отсутствующие. Диагностические VPS-файлы удалены; оставлены current `c6fe2c8` и rollback `6330399`, свободно `1.8 GiB`.
+
 ## 2026-08-27 — диагностика зависшей пользовательской torrent-задачи
 
 На production подтверждены две независимые причины наблюдаемого поведения:

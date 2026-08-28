@@ -1,12 +1,14 @@
 # Current state
 
-Production release `c6fe2c8` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime, zero restarts. Public health: storage configured, torrent available, active transfers `0`.
+Production release `f24b1a3` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime, zero restarts. Public health: storage configured, torrent available, active transfers `0`.
 
 Rutube и torrent больше не используют один многочасовой PUT. Source читается в bounded RAM-buffer максимум 8 MiB, затем отправляется отдельным Yandex `Content-Range`; каждый `202/201` сохраняет durable offset. Полного staging на VPS нет.
 
 UI/API показывают раздельные Source Speed, Yandex Upload Speed и Bottleneck. Progress/ETA используют только подтверждённые Yandex bytes. Технические поля сохраняют buffer fill, последний PUT time и суммарный write wait.
 
 Read-only медиатека доступна через HTTPS WebDAV `/vlc/` с отдельной Basic-auth учётной записью из ignored `runtime/secrets/vlc-sftp.env`. `PROPFIND`, `GET`, `HEAD` и byte ranges работают; writes/traversal/depth infinity запрещены. SFTP bridge также работает локально на 2022, но внешний порт блокирует UFW, поэтому клиентский путь — WebDAV 443.
+
+Для VLC 3.0.23 тот же `GET /vlc/` дополнительно возвращает XSPF всей `/Media`: это исправляет `405` при вводе корневого URL через «Открыть сетевой поток» на macOS/iOS. Production headless VLC smoke подтвердил XSPF parsing, выбор текущего TS-файла, `206` и TS demux. WebDAV-клиенты по-прежнему используют `PROPFIND` без изменения контракта.
 
 # Completed operation
 
@@ -25,7 +27,7 @@ Job `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` сохраняет `Мастер иг
 
 # Final validation
 
-- `npm test`: 27/27; server/web typecheck and production build passed.
+- `npm test`: 27/27; server/web typecheck and production build passed, включая directory XSPF regression.
 - Public health, current release, PM2 zero-restart, WebDAV `207/206` and final media bytes verified.
 - Synthetic media удалён recoverably в Yandex Trash; remote pull test destination отсутствует.
 - На VPS оставлены только current `c6fe2c8` и rollback `6330399`; diagnostics удалены, свободно `1.8 GiB`.

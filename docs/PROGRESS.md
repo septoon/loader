@@ -1,5 +1,19 @@
 # Progress
 
+## 2026-08-28 — совместимый каталог для VLC 3.0.23 на macOS/iOS
+
+Production access log установил точную причину клиентского отказа: оба пользовательских VLC достигали `/vlc/`, проходили Basic auth как `vlc`, выполняли обычный `GET` и получали `405`. Реализованный WebDAV корректно отвечал только на `PROPFIND`, тогда как ввод URL через «Открыть сетевой поток» в VLC 3.0.23 трактует адрес как media/playlist MRL.
+
+Release `f24b1a3` сохраняет WebDAV `PROPFIND/GET file/HEAD/range`, а `GET` или `HEAD` каталога `/vlc/` возвращает динамический XSPF со всеми поддерживаемыми audio/video из `/Media` рекурсивно. Плейлист ограничен 10 000 объектами и глубиной 32, не содержит пароля и не кешируется. Файлы по-прежнему читаются range-stream через официальный Yandex Disk API без staging.
+
+Проверка:
+
+- targeted test, полный `npm test` 27/27, typecheck и production build passed;
+- production: `GET /vlc/` → `200 application/xspf+xml`, `HEAD` → `200`, `PROPFIND` → `207`;
+- XSPF содержит актуальный `Мастер игры, 2 сезон, 7 выпуск.ts`; его range вернул `206`, `564` bytes, TS sync `0x47` на offsets `0/188/376`;
+- установленный macOS VLC `3.0.23` в headless smoke разобрал XSPF, выбрал элемент, получил `206`, активировал TS demux и прочитал `5,599,232` bytes до намеренной остановки через 3 секунды;
+- PM2 `loader`/`loader-vlc` online, zero restarts, public health `ok`.
+
 ## 2026-08-28 — Rutube/Yandex bottleneck, checkpointed upload и VLC `/Media`
 
 Пользовательская Rutube-задача `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` установила реальную причину неработающей передачи. Один PUT на `1,390,208,864` bytes трижды оборвался через 78–121 минут; upload session не подтвердила локальный offset, поэтому worker начинал с нуля и в итоге получил `fetch failed`.

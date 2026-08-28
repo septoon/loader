@@ -51,6 +51,9 @@ test('очередь и события сохраняются после пов�
     const cancelled = second.cancelJob(vkJob.id)
     assert.equal(cancelled.status, 'cancelled')
     assert.equal(cancelled.errorMessage, null)
+    const deleted = second.deleteJob(cancelled.id)
+    assert.equal(deleted.id, cancelled.id)
+    assert.equal(second.getJob(cancelled.id), null)
     second.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

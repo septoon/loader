@@ -2,7 +2,7 @@ import type { SVGProps } from 'react'
 
 export type IconName = 'active' | 'check' | 'warning' | 'settings' | 'logout' | 'link' | 'upload'
   | 'folder' | 'chevron' | 'pause' | 'play' | 'cancel' | 'info' | 'files' | 'log'
-  | 'cloud' | 'clock' | 'speed' | 'retry'
+  | 'cloud' | 'clock' | 'speed' | 'retry' | 'trash'
 
 export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {
   const common = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
@@ -29,4 +29,5 @@ const paths: Record<IconName, React.ReactNode> = {
   clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
   speed: <><path d="M4 17a8 8 0 1 1 16 0M12 13l4-4"/><circle cx="12" cy="17" r="1"/></>,
   retry: <><path d="M20 7v5h-5"/><path d="M18.5 15a7 7 0 1 1 .3-7.6L20 12"/></>,
+  trash: <><path d="M4 7h16M9 3h6l1 4H8l1-4Zm-2 4 1 14h8l1-14M10 11v6m4-6v6"/></>,
 }

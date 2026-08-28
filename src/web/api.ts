@@ -64,6 +64,10 @@ export async function mutateJob(id: string, action: 'pause' | 'resume' | 'cancel
   return (await request<{ job: Job }>(endpoint, { method: action === 'cancel' ? 'DELETE' : 'POST' })).job
 }
 
+export async function deleteJob(id: string): Promise<void> {
+  await request(`/api/jobs/${id}/remove`, { method: 'DELETE' })
+}
+
 async function request<T = unknown>(url: string, init: RequestInit = {}): Promise<T> {
   const requestInit: RequestInit = {
     ...init,

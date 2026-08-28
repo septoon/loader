@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events'
+import { rm } from 'node:fs/promises'
+import path from 'node:path'
 import { isRemoteImportSource, type Job } from '../shared/types.js'
 import type { AppConfig } from './config.js'
 import { JobDatabase, type InternalJob } from './database.js'
@@ -57,13 +59,17 @@ export class JobRunner {
 
   pauseJob(id: string): Job {
     const job = this.database.pauseJob(id)
-    this.abortTransfer(job)
+    if (job.sourceKind === 'torrent-file' || job.sourceKind === 'magnet') this.#torrent?.pause(job.id)
+    else this.abortTransfer(job)
     this.notify(job)
     return job
   }
 
   resumeJob(id: string): Job {
-    const job = this.database.resumeJob(id)
+    let job = this.database.resumeJob(id)
+    if ((job.sourceKind === 'torrent-file' || job.sourceKind === 'magnet') && this.#torrent?.resume(job.id)) {
+      job = this.database.updateJob(id, { status: 'verifying' })
+    }
     this.notify(job)
     this.wake()
     return job
@@ -74,6 +80,19 @@ export class JobRunner {
     this.abortTransfer(job)
     this.notify(job)
     return job
+  }
+
+  async deleteJob(id: string): Promise<void> {
+    const job = this.database.deleteJob(id)
+    this.abortTransfer(job)
+    this.notify()
+    if (job.sourceKind === 'torrent-file' || job.sourceKind === 'magnet') {
+      await this.#torrent?.waitForStop(job.id)
+      await removeJobArtifact(this.config.pieceCacheDir, job.id)
+    }
+    if (job.sourceKind === 'torrent-file') {
+      await removeJobArtifact(this.config.torrentMetadataDir, `${job.id}.torrent`)
+    }
   }
 
   private async tick(): Promise<void> {
@@ -170,4 +189,11 @@ export class JobRunner {
     if (job.sourceKind === 'rutube') this.#rutube?.abort(job.id)
     else if (!isRemoteImportSource(job.sourceKind)) this.#torrent?.abort(job.id)
   }
+}
+
+async function removeJobArtifact(root: string, name: string): Promise<void> {
+  const absoluteRoot = path.resolve(root)
+  const target = path.resolve(absoluteRoot, name)
+  if (!target.startsWith(`${absoluteRoot}${path.sep}`)) throw new Error('Некорректный путь служебных данных загрузки')
+  await rm(target, { recursive: true, force: true })
 }

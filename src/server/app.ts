@@ -171,6 +171,15 @@ export async function buildApp({ config, database, runner, media }: Dependencies
     return runner.cancelJob(request.params.id)
   }))
 
+  app.delete<{ Params: { id: string } }>('/api/jobs/:id/remove', async (request, reply) => {
+    try {
+      await runner.deleteJob(request.params.id)
+      return reply.code(204).send()
+    } catch (error) {
+      return sendKnownError(reply, error)
+    }
+  })
+
   app.get('/api/events', async (request, reply) => {
     reply.hijack()
     reply.raw.writeHead(200, {

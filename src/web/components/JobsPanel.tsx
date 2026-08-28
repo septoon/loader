@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { isRemoteImportSource, type Job, type JobEvent, type JobFileStatus, type JobStatus } from '../../shared/types'
-import { getJobEvents, mutateJob } from '../api'
+import { deleteJob, getJobEvents, mutateJob } from '../api'
 import { type JobFilter, isActive, isFailed } from './Sidebar'
 import { Icon } from './Icon'
 
@@ -55,6 +55,21 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
     }
   }
 
+  const remove = async (job: Job) => {
+    const remoteImportActive = isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)
+    const message = remoteImportActive
+      ? 'Удалить загрузку из списка? Импорт Яндекс Диска может продолжиться, а уже сохранённый файл не удаляется.'
+      : 'Удалить загрузку из списка? Уже сохранённый файл на Яндекс Диске не удаляется.'
+    if (!window.confirm(message)) return
+    try {
+      await deleteJob(job.id)
+      if (expandedId === job.id) setExpandedId(null)
+      onChanged()
+    } catch (error) {
+      onError(toMessage(error))
+    }
+  }
+
   return <section className="jobs-section" aria-label="Загрузки">
     <div className="status-tabs" role="tablist" aria-label="Состояние загрузок">
       {([['active', 'Активные'], ['completed', 'Завершённые'], ['failed', 'Ошибки']] as const).map(([id, label]) =>
@@ -98,6 +113,7 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
               {(['queued', 'paused', 'failed'].includes(job.status) || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind)) && ['transferring', 'verifying'].includes(job.status)))
                 && <button className="danger" type="button" onClick={() => void action(job, 'cancel')}><Icon name="cancel"/><span>Отменить</span></button>}
               {job.sourceKind === 'direct-url' && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
+              <button className="danger" type="button" onClick={() => void remove(job)}><Icon name="trash"/><span>Удалить</span></button>
             </div>
             {expanded && <JobDetails job={job} tab={detailTab} events={events[job.id]} onTab={(tab) => void setTab(job, tab)} />}
           </article>

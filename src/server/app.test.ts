@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -52,6 +52,23 @@ test('authenticated API анализирует magnet и multipart .torrent', as
     assert.equal(analyzed.json().sourceKind, 'torrent-file')
     assert.equal(analyzed.json().fileCount, 1)
     assert.equal(analyzed.json().destinationPath, '/Media/Movies/Фильм.mkv')
+
+    const removable = database.createJob({
+      source: '', sourceKind: 'torrent-file', sourceLabel: 'Торрент-файл · test.torrent', title: 'test.mkv',
+      destination: 'movies', destinationPath: '/Media/Movies/test.mkv', supported: true, note: 'test',
+    })
+    await mkdir(config.torrentMetadataDir, { recursive: true })
+    await mkdir(path.join(config.pieceCacheDir, removable.id), { recursive: true })
+    const metadataPath = path.join(config.torrentMetadataDir, `${removable.id}.torrent`)
+    await writeFile(metadataPath, torrent)
+    await writeFile(path.join(config.pieceCacheDir, removable.id, 'piece'), Buffer.alloc(8))
+    const removed = await app.inject({
+      method: 'DELETE', url: `/api/jobs/${removable.id}/remove`, headers: { cookie },
+    })
+    assert.equal(removed.statusCode, 204, removed.body)
+    assert.equal(database.getJob(removable.id), null)
+    await assert.rejects(access(metadataPath))
+    await assert.rejects(access(path.join(config.pieceCacheDir, removable.id)))
   } finally {
     await app.close()
     await runner.stop()

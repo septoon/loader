@@ -328,6 +328,12 @@ export class JobDatabase {
     return updated
   }
 
+  deleteJob(id: string): InternalJob {
+    const job = requireJob(this.getInternalJob(id))
+    this.#database.prepare('DELETE FROM jobs WHERE id = ?').run(id)
+    return job
+  }
+
   addEvent(jobId: string, level: JobEvent['level'], message: string): void {
     this.#database.prepare('INSERT INTO job_events (job_id, level, message, created_at) VALUES (?, ?, ?, ?)')
       .run(jobId, level, message.slice(0, 1_000), new Date().toISOString())

@@ -15,6 +15,63 @@ import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
 interface ActiveTransfer {
   controller: AbortController
   client: any
+  phase: 'starting' | 'hashing' | 'transferring'
+  pauseGate: PauseGate
+  finished: Promise<void>
+  finish: () => void
+}
+
+export const torrentClientOptions = {
+  lsd: false,
+  natUpnp: false,
+  natPmp: false,
+  maxConns: 45,
+  // utp-native 2.5.3 can emit UTP_ECONNRESET after WebTorrent has detached
+  // its peer listeners. Keep the worker on the stable TCP path instead of
+  // allowing a routine peer disconnect to terminate the whole API process.
+  utp: false,
+} as const
+
+export class PauseGate {
+  #paused = false
+  readonly #waiters = new Set<() => void>()
+
+  get paused(): boolean {
+    return this.#paused
+  }
+
+  pause(): void {
+    this.#paused = true
+  }
+
+  resume(): void {
+    this.#paused = false
+    for (const resolve of this.#waiters) resolve()
+    this.#waiters.clear()
+  }
+
+  async wait(signal: AbortSignal): Promise<void> {
+    while (this.#paused) {
+      signal.throwIfAborted()
+      await new Promise<void>((resolve, reject) => {
+        const resumed = () => {
+          cleanup()
+          resolve()
+        }
+        const aborted = () => {
+          cleanup()
+          reject(signal.reason instanceof Error ? signal.reason : new Error('Загрузка остановлена'))
+        }
+        const cleanup = () => {
+          this.#waiters.delete(resumed)
+          signal.removeEventListener('abort', aborted)
+        }
+        this.#waiters.add(resumed)
+        signal.addEventListener('abort', aborted, { once: true })
+        if (!this.#paused) resumed()
+      })
+    }
+  }
 }
 
 export class TorrentTransfer {
@@ -27,19 +84,47 @@ export class TorrentTransfer {
     private readonly notify: () => void,
   ) {}
 
+  pause(jobId: string): void {
+    const transfer = this.#active.get(jobId)
+    if (!transfer) return
+    if (transfer.phase === 'hashing') transfer.pauseGate.pause()
+    else this.abort(jobId)
+  }
+
+  resume(jobId: string): boolean {
+    const transfer = this.#active.get(jobId)
+    if (!transfer?.pauseGate.paused) return false
+    transfer.pauseGate.resume()
+    return true
+  }
+
   abort(jobId: string): void {
-    this.#active.get(jobId)?.controller.abort(new Error('Загрузка остановлена пользователем'))
+    const transfer = this.#active.get(jobId)
+    transfer?.controller.abort(new Error('Загрузка остановлена пользователем'))
+    transfer?.pauseGate.resume()
+  }
+
+  async waitForStop(jobId: string): Promise<void> {
+    await this.#active.get(jobId)?.finished
   }
 
   abortAll(): void {
-    for (const transfer of this.#active.values()) transfer.controller.abort(new Error('Сервис останавливается'))
+    for (const transfer of this.#active.values()) {
+      transfer.controller.abort(new Error('Сервис останавливается'))
+      transfer.pauseGate.resume()
+    }
   }
 
   async process(job: InternalJob): Promise<void> {
     const controller = new AbortController()
     const cachePath = path.join(this.config.pieceCacheDir, job.id)
-    const client = new WebTorrent({ lsd: false, natUpnp: false, natPmp: false, maxConns: 45 })
-    this.#active.set(job.id, { controller, client })
+    const client = new WebTorrent(torrentClientOptions)
+    let finish: () => void = () => undefined
+    const finished = new Promise<void>((resolve) => { finish = resolve })
+    const transfer: ActiveTransfer = {
+      controller, client, phase: 'starting', pauseGate: new PauseGate(), finished, finish,
+    }
+    this.#active.set(job.id, transfer)
 
     try {
       const torrentId = await this.loadTorrentId(job)
@@ -79,7 +164,7 @@ export class TorrentTransfer {
         if (!torrentFile || Number(torrentFile.length) !== fileRecord.size) {
           throw new Error(`Состав торрента изменился: ${fileRecord.relativePath}`)
         }
-        await this.processFile(job.id, torrent, torrentFile, fileRecord, controller.signal)
+        await this.processFile(job.id, torrent, torrentFile, fileRecord, transfer)
       }
 
       const completed = this.database.updateJob(job.id, {
@@ -96,8 +181,12 @@ export class TorrentTransfer {
       void completed
     } finally {
       this.#active.delete(job.id)
-      await destroyClient(client)
-      await rm(cachePath, { recursive: true, force: true })
+      try {
+        await destroyClient(client)
+        await rm(cachePath, { recursive: true, force: true })
+      } finally {
+        transfer.finish()
+      }
     }
   }
 
@@ -106,8 +195,9 @@ export class TorrentTransfer {
     torrent: any,
     torrentFile: any,
     initialFile: InternalJobFile,
-    signal: AbortSignal,
+    transfer: ActiveTransfer,
   ): Promise<void> {
+    const signal = transfer.controller.signal
     let file = initialFile
     if (file.status === 'completed') {
       const metadata = await this.storage.getMetadataOrNull(file.destinationPath)
@@ -119,6 +209,7 @@ export class TorrentTransfer {
     if (file.md5 && file.sha256) {
       digests = { md5: file.md5, sha256: file.sha256 }
     } else {
+      transfer.phase = 'hashing'
       this.database.updateJobFile(file.id, { status: 'hashing', bytesTransferred: 0 })
       this.database.updateJob(jobId, { status: 'verifying', progress: null, speedBytesPerSecond: 0 })
       this.database.addEvent(jobId, 'info', `Проверяется источник: ${file.relativePath}`)
@@ -134,10 +225,13 @@ export class TorrentTransfer {
           this.updateAggregate(jobId, 0)
           this.notify()
         },
+        () => transfer.pauseGate.wait(signal),
       )
       file = this.database.updateJobFile(file.id, { ...digests, status: 'pending', bytesTransferred: 0 })
       this.updateAggregate(jobId, 0)
     }
+
+    transfer.phase = 'transferring'
 
     const existing = await this.storage.getMetadataOrNull(file.destinationPath)
     if (existing) {
@@ -339,10 +433,13 @@ async function hashTorrentFile(
   onProgress: (bytes: number) => void,
   inactivityTimeoutMs: number,
   onInactive?: () => void,
+  waitIfPaused?: () => Promise<void>,
 ): Promise<FileDigests> {
   const md5 = createHash('md5')
   const sha256 = createHash('sha256')
-  for await (const chunk of readTorrentFile(torrent, file, 0, signal, onProgress, inactivityTimeoutMs, onInactive)) {
+  for await (const chunk of readTorrentFile(
+    torrent, file, 0, signal, onProgress, inactivityTimeoutMs, onInactive, waitIfPaused,
+  )) {
     md5.update(chunk)
     sha256.update(chunk)
   }
@@ -357,6 +454,7 @@ async function * readTorrentFile(
   onProgress?: (bytes: number) => void,
   inactivityTimeoutMs?: number,
   onInactive?: () => void,
+  waitIfPaused?: () => Promise<void>,
 ): AsyncGenerator<Buffer> {
   const store = torrent.store?.store ?? torrent.store
   const pieceStore: BoundedPieceStore | undefined = torrent.loaderPieceStore ?? store?.loaderPieceStore ?? store
@@ -374,6 +472,7 @@ async function * readTorrentFile(
   let releasePiece: number | null = null
   try {
     while (true) {
+      await waitIfPaused?.()
       const next = await nextWithAbort(iterator, signal, inactivityTimeoutMs, refreshPeers)
       if (next.done) break
       signal.throwIfAborted()

@@ -1,6 +1,10 @@
 # Current state
 
-Production release `feb2dcf` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime, zero restarts. Public health: storage configured, torrent available; active transfer — новый VK job.
+Production release `ec981aa` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime, zero restarts после выкладки. Public health: storage configured, torrent available; активен пользовательский torrent hash-pass.
+
+Причина прежнего `HTTP 502` устранена: `utp-native@2.5.3` дважды выбрасывал необработанный `UTP_ECONNRESET` и завершал Node. Torrent client теперь использует TCP (`utp: false`), сохраняя tracker discovery и bounded cache.
+
+Пауза torrent во время hash-pass сохраняет WebTorrent client и MD5/SHA-256 state в памяти. Resume продолжает с той же byte-отметки и сразу переподключает peers/tracker. При upload пауза остаётся checkpoint-based. Удаление записей отделено от отмены и доступно во всех status tabs; оно не удаляет media с Яндекс Диска.
 
 Rutube и torrent больше не используют один многочасовой PUT. Source читается в bounded RAM-buffer максимум 8 MiB, затем отправляется отдельным Yandex `Content-Range`; каждый `202/201` сохраняет durable offset. Полного staging на VPS нет.
 
@@ -14,14 +18,14 @@ VK Видео больше не попадает в direct import как HTML. R
 
 Мобильная нижняя навигация удалена: она дублировала status tabs и прыгала при scroll. Composer и collapsed job card помещаются в один экран `390×844`; desktop sidebar сохранён. Состояние и выход доступны через верхний индикатор Яндекс Диска.
 
-# Active VK operation
+# Active torrent operation
 
-Job `afc80f03-fe0e-4837-971b-ae4f2dfd544e` сохраняет `Изгой (2000) 4К.mp4` в `/Media/Movies`.
+Job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` проверяет `In.the.Grey.2026.D.P.WEB-DLRip.DD2.0.XviD-p3rr3nt.avi` для `/Media/Movies`.
 
-- Expected size: `3,755,022,717` bytes; 1080p; duration 8626 seconds.
-- Operation checkpoint сохранён; текущий статус на момент handoff: `transferring`, error null.
-- Yandex прошёл Basic challenge и держит authenticated relay GET; отдельный 1-MiB production range вернул `206` со скоростью `6.42 MB/s`.
-- Полного progress API у Yandex remote import нет; UI показывает indeterminate transfer до operation success и итоговой metadata verification.
+- Size: `1,575,770,112` bytes.
+- Live pause/resume доказал отсутствие сброса: `245,366,784` → pause stabilized at `255,852,544` → resume `312,475,648` bytes.
+- PM2 после этого не перезапускался; error null. Дальнейшая скорость зависит от доступности TCP-пиров конкретной раздачи.
+- До release сохранённых MD5/SHA-256 не было, поэтому после обязательного deploy текущий hash-pass один раз стартовал заново. Следующая пауза внутри живого процесса уже продолжилась с той же отметки.
 
 # Completed operation
 
@@ -40,8 +44,9 @@ Job `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` сохраняет `Мастер иг
 
 # Final validation
 
-- `npm test`: 30/30; server/web typecheck and production build passed, включая VK resolver/relay и directory XSPF regressions.
-- Public health, current release, PM2 zero-restart, VK authenticated relay `206`, WebDAV auth contract and production assets verified.
+- `npm test`: 33/33; server/web typecheck and production build passed, включая torrent pause gate, TCP transport option, delete API/artifact cleanup, VK relay и directory XSPF regressions.
+- Mobile Browser QA `390×844`: delete доступен во всех трёх вкладках, synthetic row удаляется, console errors отсутствуют.
+- Public health, current release, PM2 zero-restart, production delete smoke `204`, WebDAV auth contract and production assets verified.
 - Synthetic media удалён recoverably в Yandex Trash; remote pull test destination отсутствует.
 - На VPS оставлены current `feb2dcf` и rollback `f24b1a3`; standalone yt-dlp занимает около 39 MiB.
 
@@ -52,6 +57,7 @@ Job `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` сохраняет `Мастер иг
 - Pull через защищённый VPS/WebDAV измерен на `2.34 MiB/s` и технически обходит медленный PUT, но для Rutube требует отдельного short-lived relay lifecycle с сохранением pause/cancel/recovery; автоматически не включён вслепую.
 - VK pull-relay не даёт достоверно разделить Source Speed и Yandex Upload Speed в одном demand-driven stream, поэтому UI не показывает выдуманные значения. Yandex remote import также не сообщает byte progress.
 - Direct remote import сохраняет crash-window между ответом Yandex и записью operation URL; backup/retention SQLite/shared runtime также остаются будущей эксплуатационной задачей.
+- Hash state torrent сохраняется только в памяти до завершения hash-pass. Process/deploy crash до появления MD5/SHA-256 требует повторной полной проверки; обычная UI-пауза теперь state не теряет.
 - `npm audit --omit=dev` показывает четыре high findings в pin `webtorrent@3.0.21 -> ip@2.0.1`; reachability ограничена tracker client path, automatic force-fix запрещён.
 
 # Relevant files

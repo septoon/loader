@@ -1,5 +1,26 @@
 # Progress
 
+## 2026-08-29 — torrent 502, pause без сброса hash-pass и удаление записей
+
+Production job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` дважды оборвал проверку файла `In.the.Grey…avi`. Причина `HTTP 502` подтверждена по PM2 error log: обычный peer disconnect вызывал необработанный `UTP_ECONNRESET` из `utp-native@2.5.3`, Node завершался с code 1, PM2 перезапускал Loader, а несериализуемый MD5/SHA-256 hash-pass начинался заново. До исправления зафиксированы два рестарта процесса; второй запуск дошёл до `666,894,336 / 1,575,770,112` bytes и затем завершился штатным inactivity error из-за отсутствия доступных пиров.
+
+Release `ec981aa`:
+
+- отключает только crash-prone native uTP transport через штатный `WebTorrent({ utp: false })`; BitTorrent продолжает работать по TCP, bounded piece-cache и tracker discovery сохранены;
+- во время torrent hash-pass `Пауза` больше не abort-ит WebTorrent client и hash objects: PauseGate удерживает текущий поток в памяти, а `Продолжить` возобновляет его с той же byte-отметки, переподключает известные peers и немедленно вызывает tracker announce;
+- во время передачи на Яндекс пауза по-прежнему использует durable upload checkpoint, потому что это безопаснее удержания незавершённого PUT;
+- сохраняет старый `DELETE /api/jobs/:id` как `Отменить` для совместимости и добавляет отдельный `DELETE /api/jobs/:id/remove`; удаление доступно в активных, завершённых и ошибочных карточках, каскадно очищает job/files/events и служебные torrent metadata/cache, но не удаляет уже сохранённый файл с Яндекс Диска;
+- активный удалённый import можно убрать из списка, но официальный API Яндекс Диска не гарантирует остановку уже запущенной remote operation; UI предупреждает об этом до удаления.
+
+Проверка:
+
+- `typecheck`, production build и `npm test`: 33/33 локально; тот же комплект 33/33 выполнен на VPS перед первой выкладкой;
+- mobile Browser QA `390×844`: `Удалить` доступно во вкладках `Активные`, `Завершённые`, `Ошибки`; synthetic запись удалена, счётчик изменился `1 → 0`, console errors отсутствуют;
+- production delete smoke: `204`, synthetic completed job отсутствует после запроса;
+- live torrent pause/resume: до паузы `245,366,784` bytes (`15.57%`), после завершения одной уже запрошенной bounded piece пауза стабилизировалась на `255,852,544` (`16.24%`), после `Продолжить` дошла до `312,475,648` (`19.83%`) без отката к нулю;
+- после live pause/resume PM2 `loader` остался на том же PID с zero restarts; public health `ok`, новый asset `index-HDeECxLZ.js` доступен;
+- старые release-каталоги `f24b1a3`, `feb2dcf`, `8c95789` удалены после проверки точных путей; shared runtime/SQLite не затронуты, rollback сохраняется.
+
 ## 2026-08-28 — VK Видео, защищённый pull-relay и компактный mobile UI
 
 Production job со ссылкой `vkvideo.ru/video-221995703_456240730` ошибочно имел `source_kind=direct-url`, имя `video-221995703_456240730` без расширения и завершался ошибкой Yandex remote import. Причина подтверждена по всему data path: Loader отправлял HTML-страницу VK в Yandex `/resources/upload`; даже извлечённый progressive URL нельзя передать напрямую, потому что он подписан с `srcIp` и требует browser headers. Контрольный прямой import извлечённого URL вернул `failed`, metadata destination — `404`.

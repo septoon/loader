@@ -41,6 +41,14 @@ test('очередь и события сохраняются после пов�
     assert.equal(transferring.bottleneck, 'yandex')
     assert.equal(transferring.uploadRequestMs, 64_000)
     assert.throws(() => second.cancelJob(transferring.id), JobConflictError)
+
+    const vkJob = second.createJob({
+      source: 'https://m.vk.com/video-1_2', sourceKind: 'vkvideo', sourceLabel: 'VK Видео · -1_2',
+      title: 'Видео.mp4', destination: 'movies', destinationPath: '/Media/Movies/Видео.mp4',
+      supported: true, note: 'test', totalBytes: 5,
+    })
+    second.updateJob(vkJob.id, { status: 'transferring' })
+    assert.equal(second.cancelJob(vkJob.id).status, 'cancelled')
     second.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

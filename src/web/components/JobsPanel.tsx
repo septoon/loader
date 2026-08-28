@@ -95,9 +95,9 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
               {(job.status === 'queued' || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)))
                 && <button type="button" onClick={() => void action(job, 'pause')}><Icon name="pause"/><span>Пауза</span></button>}
               {['paused', 'failed'].includes(job.status) && <button type="button" onClick={() => void action(job, 'resume')}><Icon name={job.status === 'failed' ? 'retry' : 'play'}/><span>{job.status === 'failed' ? 'Повторить' : 'Продолжить'}</span></button>}
-              {(['queued', 'paused', 'failed'].includes(job.status) || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)))
+              {(['queued', 'paused', 'failed'].includes(job.status) || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind)) && ['transferring', 'verifying'].includes(job.status)))
                 && <button className="danger" type="button" onClick={() => void action(job, 'cancel')}><Icon name="cancel"/><span>Отменить</span></button>}
-              {isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
+              {job.sourceKind === 'direct-url' && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
             </div>
             {expanded && <JobDetails job={job} tab={detailTab} events={events[job.id]} onTab={(tab) => void setTab(job, tab)} />}
           </article>
@@ -159,8 +159,16 @@ function Progress({ job }: { job: Job }) {
     <span className={indeterminate ? 'progress-track is-indeterminate' : 'progress-track'}>
       <span style={indeterminate ? undefined : { width: `${value ?? 0}%` }} />
     </span>
-    <span className="progress-bytes">{job.totalBytes ? `${formatBytes(job.bytesTransferred ?? 0)} из ${formatBytes(job.totalBytes)}` : 'Объём уточняется'}</span>
+    <span className="progress-bytes">{progressBytesLabel(job)}</span>
   </span>
+}
+
+function progressBytesLabel(job: Job): string {
+  if (isRemoteImportSource(job.sourceKind) && job.bytesTransferred === null
+    && ['transferring', 'verifying'].includes(job.status)) {
+    return 'Яндекс не сообщает прогресс по байтам'
+  }
+  return job.totalBytes ? `${formatBytes(job.bytesTransferred ?? 0)} из ${formatBytes(job.totalBytes)}` : 'Объём уточняется'
 }
 
 function EmptyState({ filter }: { filter: JobFilter }) {

@@ -317,7 +317,8 @@ export class JobDatabase {
   cancelJob(id: string): InternalJob {
     const job = requireJob(this.getInternalJob(id))
     const canCancel = ['queued', 'paused', 'failed'].includes(job.status)
-      || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status))
+      || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind))
+        && ['transferring', 'verifying'].includes(job.status))
     if (!canCancel) throw new JobConflictError('Активный удалённый импорт нельзя безопасно отменить через API Яндекс Диска')
     const updated = this.updateJob(id, {
       status: 'cancelled', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,

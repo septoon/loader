@@ -7,6 +7,7 @@ import { resolveVkVideoSource, type VkVideoSource } from './vk-video.js'
 
 const relayUsername = 'loader-vk'
 const sourceCacheTtlMs = 2 * 60_000
+const cancellationPollMs = 500
 
 type VkResolver = (source: string) => Promise<VkVideoSource>
 
@@ -39,9 +40,17 @@ export function registerVkVideoRelay(
         return reply.header('Content-Range', `bytes */${job.totalBytes ?? '*'}`).code(416).send()
       }
 
+      const controller = new AbortController()
+      const cancellationTimer = setInterval(() => {
+        const current = database.getInternalJob(job.id)
+        if (!current || !['transferring', 'verifying'].includes(current.status)) controller.abort()
+      }, cancellationPollMs)
+      cancellationTimer.unref()
+      let streaming = false
+
       try {
         const resolved = await cachedSource(job.id, job.source)
-        const controller = new AbortController()
+        if (controller.signal.aborted) return reply.code(410).send()
         const response = await fetcher(resolved.mediaUrl, {
           headers: { ...resolved.requestHeaders, ...(range ? { Range: range } : {}) },
           redirect: 'error',
@@ -72,12 +81,22 @@ export function registerVkVideoRelay(
           return reply.code(response.status).send()
         }
 
-        reply.raw.once('close', () => controller.abort())
+        streaming = true
+        reply.raw.once('close', () => {
+          clearInterval(cancellationTimer)
+          controller.abort()
+        })
         return reply.code(response.status).send(
           Readable.fromWeb(response.body as unknown as import('node:stream/web').ReadableStream),
         )
       } catch {
+        if (controller.signal.aborted) return reply.code(410).send()
         return reply.code(502).send()
+      } finally {
+        if (!streaming) {
+          clearInterval(cancellationTimer)
+          controller.abort()
+        }
       }
     },
   })

@@ -36,11 +36,57 @@ export function registerMediaWebDav(
         const resource = await library.getResource(mediaPath)
         if (!resource) return reply.code(404).send()
         if (request.method === 'PROPFIND') return respondPropfind(request, reply, library, resource, mediaPath)
-        if (resource.type !== 'file') return reply.code(405).send()
+        if (resource.type === 'dir') return respondPlaylist(request, reply, library, mediaPath)
         return respondFile(request, reply, library, resource, mediaPath)
       },
     })
   }
+}
+
+async function respondPlaylist(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  library: YandexMediaLibrary,
+  mediaPath: string,
+): Promise<FastifyReply> {
+  const files = await collectPlaylistFiles(library, mediaPath)
+  const baseUrl = new URL('/vlc/', `${request.protocol}://${request.headers.host ?? request.hostname}`)
+  const body = Buffer.from(`<?xml version="1.0" encoding="UTF-8"?><playlist version="1" xmlns="http://xspf.org/ns/0/"><title>Loader Media</title><trackList>${files
+    .map(({ resource, path }) => {
+      const location = new URL(`/vlc${encodePath(path)}`, baseUrl).href
+      return `<track><title>${escapeXml(resource.name)}</title><location>${escapeXml(location)}</location></track>`
+    })
+    .join('')}</trackList></playlist>`)
+  reply.headers({
+    'Cache-Control': 'no-store',
+    'Content-Disposition': 'inline; filename="loader-media.xspf"',
+    'Content-Length': String(body.byteLength),
+    'Content-Type': 'application/xspf+xml; charset=utf-8',
+  })
+  if (request.method === 'HEAD') return reply.code(200).send()
+  return reply.code(200).send(body)
+}
+
+async function collectPlaylistFiles(
+  library: YandexMediaLibrary,
+  rootPath: string,
+): Promise<Array<{ resource: MediaResource, path: string }>> {
+  const directories = [rootPath]
+  const files: Array<{ resource: MediaResource, path: string }> = []
+  let visited = 0
+  while (directories.length > 0) {
+    const directory = directories.shift()!
+    if (directory.split('/').filter(Boolean).length > 32) throw new Error('Медиатека содержит слишком глубокую структуру')
+    for (const resource of await library.listDirectory(directory)) {
+      visited += 1
+      if (visited > 10_000) throw new Error('Медиатека содержит слишком много объектов для плейлиста')
+      const resourcePath = normalizeSftpPath(`${directory === '/' ? '' : directory}/${resource.name}`)
+      if (!resourcePath) continue
+      if (resource.type === 'dir') directories.push(resourcePath)
+      else if (isPlaylistMedia(resource.name)) files.push({ resource, path: resourcePath })
+    }
+  }
+  return files
 }
 
 async function respondPropfind(
@@ -159,4 +205,8 @@ function contentType(name: string): string {
     ts: 'video/mp2t', mov: 'video/quicktime', webm: 'video/webm', mp3: 'audio/mpeg',
     m4a: 'audio/mp4', flac: 'audio/flac', srt: 'application/x-subrip', ass: 'text/x-ssa',
   } as Record<string, string>)[extension] ?? 'application/octet-stream'
+}
+
+function isPlaylistMedia(name: string): boolean {
+  return /\.(?:mp4|m4v|mkv|avi|ts|mov|webm|mp3|m4a|flac)$/iu.test(name)
 }

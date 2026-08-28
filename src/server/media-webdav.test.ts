@@ -34,6 +34,16 @@ test('WebDAV показывает /Media и отдаёт VLC диапазон с
     assert.match(listing.body, /Фильм\.mp4/u)
     assert.match(listing.body, /\/vlc\/%D0%A4/u)
 
+    const playlist = await app.inject({ method: 'GET', url: '/vlc/', headers: { authorization, host: 'loader.test' } })
+    assert.equal(playlist.statusCode, 200)
+    assert.match(String(playlist.headers['content-type']), /application\/xspf\+xml/u)
+    assert.match(playlist.body, /<title>Фильм\.mp4<\/title>/u)
+    assert.match(playlist.body, /https?:\/\/loader\.test\/vlc\/%D0%A4/u)
+
+    const playlistHead = await app.inject({ method: 'HEAD', url: '/vlc/', headers: { authorization } })
+    assert.equal(playlistHead.statusCode, 200)
+    assert.equal(playlistHead.body, '')
+
     const range = await app.inject({
       method: 'GET',
       url: `/vlc/${encodeURIComponent(movie.name)}`,

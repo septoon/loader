@@ -95,6 +95,7 @@ export class TorrentTransfer {
     const transfer = this.#active.get(jobId)
     if (!transfer?.pauseGate.paused) return false
     transfer.pauseGate.resume()
+    for (const torrent of transfer.client.torrents ?? []) refreshTorrentPeers(torrent)
     return true
   }
 

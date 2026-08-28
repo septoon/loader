@@ -47,8 +47,10 @@ test('очередь и события сохраняются после пов�
       title: 'Видео.mp4', destination: 'movies', destinationPath: '/Media/Movies/Видео.mp4',
       supported: true, note: 'test', totalBytes: 5,
     })
-    second.updateJob(vkJob.id, { status: 'transferring' })
-    assert.equal(second.cancelJob(vkJob.id).status, 'cancelled')
+    second.updateJob(vkJob.id, { status: 'transferring', errorMessage: 'old error' })
+    const cancelled = second.cancelJob(vkJob.id)
+    assert.equal(cancelled.status, 'cancelled')
+    assert.equal(cancelled.errorMessage, null)
     second.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

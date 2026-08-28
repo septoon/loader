@@ -322,7 +322,7 @@ export class JobDatabase {
     if (!canCancel) throw new JobConflictError('Активный удалённый импорт нельзя безопасно отменить через API Яндекс Диска')
     const updated = this.updateJob(id, {
       status: 'cancelled', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
-      yandexUploadSpeedBytesPerSecond: 0, bottleneck: null, bufferedBytes: 0,
+      yandexUploadSpeedBytesPerSecond: 0, bottleneck: null, bufferedBytes: 0, errorMessage: null,
     })
     this.addEvent(id, 'info', 'Загрузка отменена')
     return updated

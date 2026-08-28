@@ -33,6 +33,8 @@
 - [x] Добавить отдельный transport для страниц Rutube: официальный play-options API, максимум 720p, последовательный HLS hash/upload, persistent segment checkpoint и resume без staging.
 - [x] Добавить единый read-only доступ к `/Media` для VLC через HTTPS WebDAV с range-stream из официального Yandex Disk API; SFTP bridge также запущен локально, но внешний TCP 2022 требует отдельного root-правила UFW.
 - [x] Разделить source/Yandex throughput: production profile, 8-МиБ bounded RAM-buffer, range checkpoint, write/backpressure telemetry и отдельные Source/Yandex/Bottleneck показатели в UI.
+- [x] Добавить VK Видео как отдельный page-source: настоящее название/размер, pinned metadata resolver и защищённый pull-relay для Яндекс Диска без staging на VPS.
+- [x] Упростить мобильный UI: убрать дублирующую нижнюю навигацию, сократить composer и сворачивать технические детали задач по умолчанию.
 
 ## Критерий выбора транспорта
 
@@ -48,6 +50,7 @@
 - Streaming fallback: последовательные 8-МиБ `Content-Range`; после ошибки `HEAD` с full MD5/SHA-256/size, стабилизация server offset, затем продолжение с точной отметки.
 - Torrent: WebTorrent sequential stream -> bounded piece-cache -> bounded 8-МиБ RAM-buffer -> Yandex range uploader; при сбое повторно читать source с server offset.
 - Rutube: официальный play-options API -> максимум 720p HLS/MPEG-TS -> bounded hash-pass -> 8-МиБ Yandex ranges с точным resume по segment checkpoint.
+- VK Видео: pinned `yt-dlp` извлекает progressive MP4 максимум 1080p; Яндекс Диск забирает его через job-scoped Basic-auth relay Loader, потому что signed media URL привязан к IP и требует заголовки клиента. Relay не staging-ит файл и поддерживает range.
 - Если source нельзя повторно прочитать, full hashes неизвестны или upload URL потерян, job честно переходит в Retry; полный staging на VPS не использовать скрытно.
 
 ## После транспортной валидации

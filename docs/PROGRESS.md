@@ -1,5 +1,26 @@
 # Progress
 
+## 2026-08-28 — VK Видео, защищённый pull-relay и компактный mobile UI
+
+Production job со ссылкой `vkvideo.ru/video-221995703_456240730` ошибочно имел `source_kind=direct-url`, имя `video-221995703_456240730` без расширения и завершался ошибкой Yandex remote import. Причина подтверждена по всему data path: Loader отправлял HTML-страницу VK в Yandex `/resources/upload`; даже извлечённый progressive URL нельзя передать напрямую, потому что он подписан с `srcIp` и требует browser headers. Контрольный прямой import извлечённого URL вернул `failed`, metadata destination — `404`.
+
+Release `feb2dcf`:
+
+- распознаёт VK/VK Video URL, нормализует его к публичной mobile-странице и через pinned standalone `yt-dlp 2026.07.04` получает `Изгой (2000) 4К`, 1080p, 8626 секунд и точный размер `3,755,022,717` bytes;
+- принимает только progressive MP4 с публичного allowlisted VK CDN; yt-dlp запускается через `execFile` без shell, cookies и пользовательского config, а signed URL и заголовки не сохраняются и не логируются;
+- создаёт job-scoped HMAC Basic-auth relay `/vk-import/:jobId`; Яндекс получает media через VPS с backpressure/range, но полный файл не staging-ится ни на диск, ни в RAM;
+- обрабатывает VK как remote import: operation checkpoint сохраняется, active pause/cancel не имитируются, Source/Yandex metrics честно помечаются как не измеряемые;
+- на телефоне полностью скрывает дублирующий sidebar/bottom bar; status tabs остаются в карточке загрузок, composer стал короче, а карточки по умолчанию свёрнуты до названия и прогресса. «Состояние» открывается по индикатору Яндекс Диска, выход перенесён в это окно.
+
+Проверка:
+
+- локально и на VPS: tests `30/30`, typecheck и production build passed;
+- реальный resolver на Mac и VPS вернул одинаковые title/size/1080p; VPS source range 1 МиБ достиг `7.99 MB/s`, production authenticated relay range — `206`, 1 МиБ за `0.163 s` (`6.42 MB/s`);
+- официальный `yt-dlp_linux` проверен по release `SHA2-256SUMS`; SHA-256 `6bbb3d314cde4febe36e5fa1d55462e29c974f63444e707871834f6d8cc210ae`;
+- Browser QA `390×844` и `1440×900`: VK analysis показывает настоящее название, размер и destination; mobile sidebar отсутствует, horizontal overflow отсутствует, console errors/warnings отсутствуют, desktop scaffold сохранён;
+- production job `afc80f03-fe0e-4837-971b-ae4f2dfd544e` создан как `vkvideo`; Yandex сначала получил challenge `401`, затем открыл authenticated GET relay, operation checkpoint сохранён, статус `transferring`, error null;
+- public assets содержат новый VK/UI build, health `ok`, PM2 `loader`/`loader-vlc` online с zero restarts на `feb2dcf`, VLC unauthenticated contract остаётся `401`.
+
 ## 2026-08-28 — совместимый каталог для VLC 3.0.23 на macOS/iOS
 
 Production access log установил точную причину клиентского отказа: оба пользовательских VLC достигали `/vlc/`, проходили Basic auth как `vlc`, выполняли обычный `GET` и получали `405`. Реализованный WebDAV корректно отвечал только на `PROPFIND`, тогда как ввод URL через «Открыть сетевой поток» в VLC 3.0.23 трактует адрес как media/playlist MRL.

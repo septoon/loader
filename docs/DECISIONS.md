@@ -103,3 +103,13 @@ Worker сначала последовательно вычисляет MD5/SHA-
 Production-замер пользовательского Rutube показал 39.8 МиБ/с на 72 HLS GET и 126–128 КиБ/с на Yandex PUT. Для 32 МиБ Yandex TCP receive window ограничивал socket 98.8% времени; из 128 writes по 256 КиБ два блокировались более секунды, максимум 31.8 с. В range test тело каждого 8-МиБ PUT уходило за 0.05–0.20 с, а ответ Yandex ожидался 63.9–66.1 с. Искусственного throttling в Loader нет.
 
 Теперь source сначала заполняет отдельный 8-МиБ RAM-buffer, затем измеряется полный Yandex request до `202/201`. SQLite/API/UI хранят и показывают `Source Speed`, `Yandex Upload Speed`, определённый по их сравнению `Bottleneck`, заполнение буфера, длительность последнего PUT и суммарный write wait. Progress/ETA используют только подтверждённые Yandex bytes и effective upload speed.
+
+## D-015 — VK Видео использует защищённый pull-relay
+
+**Статус:** реализовано и проверено на production.
+
+Страница `vkvideo.ru` не является прямым файлом и не передаётся в Yandex remote import. Pinned standalone `yt-dlp 2026.07.04` вызывается через `execFile` без shell/cookies/config, выбирает progressive MP4 максимум 1080p и возвращает название, длительность, размер, одноразовый media URL и необходимые заголовки. URL принимается только с HTTPS-доменов VK CDN и публичных IP; query и адрес потока не сохраняются в SQLite и не выводятся в API/logs.
+
+Прямой import извлечённого URL реально завершился `failed`: signed URL содержит `srcIp`, а запрос без требуемых заголовков возвращает ошибку. Поэтому Yandex remote import получает job-scoped URL Loader с HMAC-derived Basic auth. Relay заново извлекает короткоживущий URL на VPS, проксирует только MP4/range с backpressure и `X-Accel-Buffering: no`, не пишет медиабайты на диск и не передаёт Authorization источнику.
+
+Активный VK import имеет те же ограничения pause/cancel, что обычный Yandex remote import. Source/Yandex скорости в UI помечаются как не измеряемые: при pull-relay один demand-driven поток не позволяет достоверно разделить source и downstream throughput.

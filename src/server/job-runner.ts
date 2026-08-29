@@ -49,10 +49,10 @@ export class JobRunner {
   }
 
   wake(): void {
-    if (this.#running) return
+    if (this.#stopping || this.#running) return
     this.#running = this.tick().finally(() => {
       this.#running = null
-      if (this.database.nextRunnableJob()) queueMicrotask(() => this.wake())
+      if (!this.#stopping && this.database.nextRunnableJob()) queueMicrotask(() => this.wake())
     })
   }
 

@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
 import { readFile, realpath, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { createMD5, createSHA256, type IHasher } from 'hash-wasm'
 import WebTorrent from 'webtorrent'
 import type { AppConfig } from './config.js'
 import { BoundedPieceStore } from './bounded-piece-store.js'
@@ -20,6 +20,25 @@ interface ActiveTransfer {
   finished: Promise<void>
   finish: () => void
 }
+
+interface TorrentHashCheckpoint {
+  version: 1
+  offset: number
+  size: number
+  md5State: string
+  sha256State: string
+}
+
+export interface ResumableTorrentHash {
+  readonly offset: number
+  readonly restored: boolean
+  readonly discardedCheckpoint: boolean
+  update: (chunk: Uint8Array) => void
+  checkpoint: () => string
+  digest: () => FileDigests
+}
+
+const torrentHashCheckpointIntervalBytes = 4 * 1024 * 1024
 
 export const torrentClientOptions = {
   lsd: false,
@@ -211,16 +230,31 @@ export class TorrentTransfer {
       digests = { md5: file.md5, sha256: file.sha256 }
     } else {
       transfer.phase = 'hashing'
-      this.database.updateJobFile(file.id, { status: 'hashing', bytesTransferred: 0 })
-      this.database.updateJob(jobId, { status: 'verifying', progress: null, speedBytesPerSecond: 0 })
-      this.database.addEvent(jobId, 'info', `Проверяется источник: ${file.relativePath}`)
+      const hash = await createResumableTorrentHash(file.size, file.sourceCheckpoint)
+      if (hash.discardedCheckpoint) {
+        this.database.addEvent(jobId, 'info', 'Повреждённая контрольная точка проверки отброшена')
+      } else if (!hash.restored && file.bytesTransferred > 0) {
+        this.database.addEvent(jobId, 'info', 'Предыдущий прогресс не имел контрольной точки и не может быть продолжен')
+      }
+      this.database.updateJobFile(file.id, {
+        status: 'hashing', bytesTransferred: hash.offset,
+        sourceCheckpoint: hash.restored ? file.sourceCheckpoint : null,
+      })
+      this.database.updateJob(jobId, {
+        status: 'verifying', progress: hash.offset / file.size, bytesTransferred: hash.offset,
+        speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0, bottleneck: 'source', errorMessage: null,
+      })
+      this.database.addEvent(jobId, 'info', hash.restored
+        ? `Проверка продолжена с ${formatBytes(hash.offset)}: ${file.relativePath}`
+        : `Проверяется источник: ${file.relativePath}`)
       this.notify()
-      const progress = createProgressReporter(jobId, file.id, 0, this.database, this.notify)
+      const checkpoint = createHashCheckpointReporter(jobId, file.id, hash.offset, this.database, this.notify)
       digests = await hashTorrentFile(
         torrent,
         torrentFile,
         signal,
-        progress,
+        hash,
+        checkpoint,
         this.config.torrentMetadataTimeoutMs,
         () => {
           this.updateAggregate(jobId, 0)
@@ -228,7 +262,9 @@ export class TorrentTransfer {
         },
         () => transfer.pauseGate.wait(signal),
       )
-      file = this.database.updateJobFile(file.id, { ...digests, status: 'pending', bytesTransferred: 0 })
+      file = this.database.updateJobFile(file.id, {
+        ...digests, status: 'pending', bytesTransferred: 0, sourceCheckpoint: null,
+      })
       this.updateAggregate(jobId, 0)
     }
 
@@ -431,20 +467,120 @@ async function hashTorrentFile(
   torrent: any,
   file: any,
   signal: AbortSignal,
-  onProgress: (bytes: number) => void,
+  hash: ResumableTorrentHash,
+  onCheckpoint: (offset: number, checkpoint: string) => void,
   inactivityTimeoutMs: number,
   onInactive?: () => void,
   waitIfPaused?: () => Promise<void>,
 ): Promise<FileDigests> {
-  const md5 = createHash('md5')
-  const sha256 = createHash('sha256')
-  for await (const chunk of readTorrentFile(
-    torrent, file, 0, signal, onProgress, inactivityTimeoutMs, onInactive, waitIfPaused,
-  )) {
-    md5.update(chunk)
-    sha256.update(chunk)
+  let lastCheckpointOffset = hash.offset
+  const persistCheckpoint = (force = false) => {
+    if (hash.offset === lastCheckpointOffset) return
+    if (!force && hash.offset - lastCheckpointOffset < torrentHashCheckpointIntervalBytes) return
+    onCheckpoint(hash.offset, hash.checkpoint())
+    lastCheckpointOffset = hash.offset
   }
-  return { md5: md5.digest('hex'), sha256: sha256.digest('hex') }
+  const sourceInactive = () => {
+    persistCheckpoint(true)
+    onInactive?.()
+  }
+
+  try {
+    for await (const chunk of readTorrentFile(
+      torrent, file, hash.offset, signal, undefined, inactivityTimeoutMs, sourceInactive, waitIfPaused,
+    )) {
+      hash.update(chunk)
+      persistCheckpoint()
+    }
+  } catch (error) {
+    persistCheckpoint(true)
+    throw error
+  }
+  persistCheckpoint(true)
+  return hash.digest()
+}
+
+export async function createResumableTorrentHash(
+  expectedSize: number,
+  serializedCheckpoint: string | null,
+): Promise<ResumableTorrentHash> {
+  const [md5, sha256] = await Promise.all([createMD5(), createSHA256()])
+  md5.init()
+  sha256.init()
+  let offset = 0
+  let restored = false
+  let discardedCheckpoint = false
+
+  if (serializedCheckpoint) {
+    try {
+      const checkpoint = decodeTorrentHashCheckpoint(serializedCheckpoint, expectedSize)
+      md5.load(decodeHashState(checkpoint.md5State))
+      sha256.load(decodeHashState(checkpoint.sha256State))
+      offset = checkpoint.offset
+      restored = true
+    } catch {
+      md5.init()
+      sha256.init()
+      discardedCheckpoint = true
+    }
+  }
+
+  return {
+    get offset() { return offset },
+    restored,
+    discardedCheckpoint,
+    update(chunk) {
+      if (offset + chunk.byteLength > expectedSize) throw new Error('Проверка торрента вышла за ожидаемый размер файла')
+      md5.update(chunk)
+      sha256.update(chunk)
+      offset += chunk.byteLength
+    },
+    checkpoint() {
+      return encodeTorrentHashCheckpoint({
+        version: 1,
+        offset,
+        size: expectedSize,
+        md5State: encodeHashState(md5),
+        sha256State: encodeHashState(sha256),
+      })
+    },
+    digest() {
+      if (offset !== expectedSize) {
+        throw new Error(`Проверка торрента неполна: ${formatBytes(offset)} из ${formatBytes(expectedSize)}`)
+      }
+      return { md5: md5.digest('hex'), sha256: sha256.digest('hex') }
+    },
+  }
+}
+
+function encodeTorrentHashCheckpoint(checkpoint: TorrentHashCheckpoint): string {
+  return JSON.stringify(checkpoint)
+}
+
+function decodeTorrentHashCheckpoint(value: string, expectedSize: number): TorrentHashCheckpoint {
+  const checkpoint = JSON.parse(value) as Partial<TorrentHashCheckpoint>
+  if (checkpoint.version !== 1
+    || checkpoint.size !== expectedSize
+    || !Number.isSafeInteger(checkpoint.offset)
+    || (checkpoint.offset ?? -1) < 0
+    || (checkpoint.offset ?? expectedSize + 1) > expectedSize
+    || !isBase64Url(checkpoint.md5State)
+    || !isBase64Url(checkpoint.sha256State)) {
+    throw new Error('Некорректная контрольная точка проверки торрента')
+  }
+  return checkpoint as TorrentHashCheckpoint
+}
+
+function encodeHashState(hash: IHasher): string {
+  return Buffer.from(hash.save()).toString('base64url')
+}
+
+function decodeHashState(value: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(value, 'base64url'))
+}
+
+function isBase64Url(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && /^[A-Za-z0-9_-]+$/u.test(value)
 }
 
 async function * readTorrentFile(
@@ -591,22 +727,21 @@ async function nextWithAbort(
   })
 }
 
-function createProgressReporter(
+function createHashCheckpointReporter(
   jobId: string,
   fileId: string,
   initialOffset: number,
   database: JobDatabase,
   notify: () => void,
-): (offset: number) => void {
+): (offset: number, checkpoint: string) => void {
   let lastBytes = initialOffset
   let lastTime = Date.now()
-  let lastPersisted = lastTime
-  return (offset) => {
+  return (offset, checkpoint) => {
+    if (!database.getInternalJob(jobId)) return
     const now = Date.now()
-    if (now - lastPersisted < 750 && offset > initialOffset) return
     const seconds = Math.max((now - lastTime) / 1_000, 0.001)
     const speed = Math.max(0, Math.round((offset - lastBytes) / seconds))
-    database.updateJobFile(fileId, { bytesTransferred: offset })
+    database.updateJobFile(fileId, { bytesTransferred: offset, sourceCheckpoint: checkpoint })
     const job = database.getInternalJob(jobId)
     if (job) {
       const total = job.files.reduce((sum, file) => sum + file.size, 0)
@@ -622,7 +757,6 @@ function createProgressReporter(
     }
     lastBytes = offset
     lastTime = now
-    lastPersisted = now
     notify()
   }
 }

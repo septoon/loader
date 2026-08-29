@@ -16,6 +16,7 @@ export class JobRunner {
   readonly #rutube: RutubeTransfer | null
   #timer: NodeJS.Timeout | null = null
   #running: Promise<void> | null = null
+  #stopping = false
 
   constructor(
     private readonly database: JobDatabase,
@@ -32,12 +33,14 @@ export class JobRunner {
 
   start(): void {
     if (this.#timer) return
+    this.#stopping = false
     this.#timer = setInterval(() => this.wake(), 1_500)
     this.#timer.unref()
     this.wake()
   }
 
   async stop(): Promise<void> {
+    this.#stopping = true
     if (this.#timer) clearInterval(this.#timer)
     this.#timer = null
     this.#torrent?.abortAll()
@@ -110,6 +113,7 @@ export class JobRunner {
       try {
         await this.#rutube!.process(job)
       } catch (error) {
+        if (this.#stopping) return
         const current = this.database.getInternalJob(job.id)
         if (current && ['paused', 'cancelled'].includes(current.status)) return
         this.fail(job, sanitizePublicError(error))
@@ -121,6 +125,7 @@ export class JobRunner {
       try {
         await this.#torrent!.process(job)
       } catch (error) {
+        if (this.#stopping) return
         const current = this.database.getInternalJob(job.id)
         if (current && ['paused', 'cancelled'].includes(current.status)) return
         this.fail(job, sanitizePublicError(error))

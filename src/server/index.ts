@@ -24,6 +24,27 @@ app.addHook('onClose', async () => {
 
 runner.start()
 
+let shuttingDown = false
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    const forcedExit = setTimeout(() => {
+      app.log.error({ signal }, 'Loader не успел корректно остановиться')
+      process.exit(1)
+    }, 18_000)
+    forcedExit.unref()
+    void app.close().then(() => {
+      clearTimeout(forcedExit)
+      process.exitCode = 0
+    }).catch((error) => {
+      clearTimeout(forcedExit)
+      app.log.error(error)
+      process.exitCode = 1
+    })
+  })
+}
+
 try {
   await app.listen({ host: config.host, port: config.port })
   if (process.env.NODE_ENV !== 'production' && process.env.LOADER_PASSWORD === undefined) {

@@ -4,22 +4,24 @@
 
 Production job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` подтвердил оставшееся окно потери прогресса. После release `ec981aa` Loader не падал и PM2 не перезапускался, но TCP-пиры дважды переставали отдавать следующую необходимую piece. Через 10 минут inactivity задача штатно завершалась ошибкой. Последняя попытка дошла до `704,643,072 / 1,575,770,112` bytes (`44.72%`), однако `job_files.source_checkpoint` оставался `NULL`, MD5/SHA-256 ещё не были завершены, поэтому Retry неизбежно начинал hash-pass с нуля.
 
-Release `0c33cfb`:
+Release `0c33cfb`, дополненный shutdown-fix в production release `2742c0e`:
 
 - использует pinned zero-dependency `hash-wasm 4.12.0`, чьи MD5/SHA-256 hashers поддерживают `save()`/`load()` между процессами;
 - сохраняет в существующем `source_checkpoint` версию формата, ожидаемый размер, byte offset и оба hash state каждые 4 МиБ, а также перед выходом по source error/abort;
 - при Retry, PM2 restart или deploy открывает torrent iterator с сохранённого offset и продолжает те же MD5/SHA-256; полный media staging и расширение piece-cache не добавлены;
 - проверяет version/size/base64 и встроенную совместимость WASM state; повреждённый или относящийся к другому файлу checkpoint отбрасывается, вместо использования недостоверного hash state;
-- обрабатывает `SIGINT`/`SIGTERM`: Fastify закрывается через `runner.stop()`, активный hash state сохраняется, а job остаётся `verifying`, чтобы новый процесс продолжил его автоматически.
+- обрабатывает `SIGINT`/`SIGTERM`: Fastify закрывается через `runner.stop()`, активный hash state сохраняется, а job остаётся `verifying`, чтобы новый процесс продолжил его автоматически;
+- не планирует новый runner tick после начала остановки. Первый controlled restart на `0c33cfb` выявил отложенный `wake()` после закрытия SQLite (`database is not open`); regression test воспроизводит этот порядок, а `2742c0e` исключает повторный tick.
 
 Проверка:
 
-- локально и в release-каталоге VPS: typecheck, production build, tests `35/35`;
+- локально и в release-каталоге VPS: typecheck, production build, tests `36/36`;
 - unit resume: первая часть файла хешируется, state загружается в новый экземпляр, итоговые MD5/SHA-256 точно совпадают с Node Crypto;
 - production после первого запуска сохранил checkpoint на `37,748,736` bytes (`443` bytes сериализованного state);
-- controlled PM2 restart сменил PID `1025009 → 1025161`; журнал нового процесса зафиксировал `Проверка продолжена с 36.0 МиБ`, через 25 секунд job дошёл до `255,852,544` bytes, не начиная с нуля;
-- затем задача дошла до `310,378,496 / 1,575,770,112` (`19.70%`) со скоростью источника около `5.2 MB/s`, error null; public `/api/health` вернул `ok`, активна одна передача;
-- старые `a952d84` и `ec981aa` оставлены как rollback; shared runtime и пользовательские media не изменялись.
+- первый controlled PM2 restart сменил PID `1025009 → 1025161`; журнал нового процесса зафиксировал `Проверка продолжена с 36.0 МиБ`, через 25 секунд job дошёл до `255,852,544` bytes, не начиная с нуля;
+- смена release на `2742c0e` продолжила проверку с `354.0 МиБ`; повторный restart уже финального кода сменил PID `1026389 → 1026511`, продолжил с `456.0 МиБ` и за 8 секунд дошёл до `511,705,088 / 1,575,770,112` (`32.47%`), error null;
+- число исторических `database is not open` в PM2 error log до и после restart финального кода осталось `2 → 2`: новый shutdown race не создаёт; public и local `/api/health` вернули `ok`, активна одна передача, закрытые API/VLC endpoints без auth вернули `401`;
+- production current — `2742c0e`, rollback — `0c33cfb`; старые `a952d84` и `ec981aa` удалены по точным путям, свободно `1.8 GiB`; shared runtime и пользовательские media не изменялись.
 
 ## 2026-08-29 — torrent 502, pause без сброса hash-pass и удаление записей
 

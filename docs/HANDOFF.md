@@ -1,10 +1,10 @@
 # Current state
 
-Production release `0c33cfb` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime. Public `/api/health`: `ok`, storage configured, torrent available; активен пользовательский torrent hash-pass. У `loader` один контролируемый restart, выполненный для live-проверки checkpoint, незапланированных падений после выкладки нет.
+Production release `2742c0e` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime. Public `/api/health`: `ok`, storage configured, torrent available; активен пользовательский torrent hash-pass. Контролируемые restart/deploy выполнены для live-проверки checkpoint; незапланированных падений финального release нет.
 
 Причина прежнего `HTTP 502` устранена: `utp-native@2.5.3` дважды выбрасывал необработанный `UTP_ECONNRESET` и завершал Node. Torrent client теперь использует TCP (`utp: false`), сохраняя tracker discovery и bounded cache.
 
-Пауза torrent во время hash-pass сохраняет WebTorrent client и MD5/SHA-256 state в памяти. Дополнительно `hash-wasm 4.12.0` сохраняет оба hash state в SQLite каждые 4 МиБ и перед graceful stop. Retry/restart/deploy продолжают с checkpoint, переподключая peers/tracker, а не начинают с нуля. При upload пауза остаётся Yandex-checkpoint-based. Удаление записей отделено от отмены и доступно во всех status tabs; оно не удаляет media с Яндекс Диска.
+Пауза torrent во время hash-pass сохраняет WebTorrent client и MD5/SHA-256 state в памяти. Дополнительно `hash-wasm 4.12.0` сохраняет оба hash state в SQLite каждые 4 МиБ и перед graceful stop. Retry/restart/deploy продолжают с checkpoint, переподключая peers/tracker, а не начинают с нуля. `2742c0e` также блокирует отложенный runner tick после закрытия SQLite; выявленный на первом restart shutdown race покрыт regression test. При upload пауза остаётся Yandex-checkpoint-based. Удаление записей отделено от отмены и доступно во всех status tabs; оно не удаляет media с Яндекс Диска.
 
 Rutube и torrent больше не используют один многочасовой PUT. Source читается в bounded RAM-buffer максимум 8 MiB, затем отправляется отдельным Yandex `Content-Range`; каждый `202/201` сохраняет durable offset. Полного staging на VPS нет.
 
@@ -24,8 +24,8 @@ Job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` проверяет `In.the.Grey.2026.
 
 - Size: `1,575,770,112` bytes.
 - До `0c33cfb` последняя попытка достигла `704,643,072` bytes (`44.72%`), но hash checkpoint отсутствовал; эту старую отметку криптографически продолжить было невозможно, поэтому после deploy произошёл последний одноразовый старт с нуля.
-- Новый checkpoint впервые сохранён на `37,748,736` bytes. Controlled PM2 restart сменил PID и новый процесс записал событие `Проверка продолжена с 36.0 МиБ`, затем дошёл до `255,852,544` без отката.
-- Последний live snapshot: `310,378,496 / 1,575,770,112` (`19.70%`), source около `5.2 MB/s`, status `verifying`, error null. Если пиры снова перестанут отдавать нужную piece, Retry продолжит с последней 4-МиБ отметки.
+- Новый checkpoint впервые сохранён на `37,748,736` bytes. Первый controlled PM2 restart записал событие `Проверка продолжена с 36.0 МиБ`, затем дошёл до `255,852,544` без отката.
+- Смена production release продолжила с `354.0 МиБ`. Повторный restart уже на `2742c0e` продолжил с `456.0 МиБ`; последний live snapshot: `511,705,088 / 1,575,770,112` (`32.47%`), status `verifying`, error null. Если пиры снова перестанут отдавать нужную piece, Retry продолжит с последней 4-МиБ отметки.
 
 # Completed operation
 
@@ -44,11 +44,11 @@ Job `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` сохраняет `Мастер иг
 
 # Final validation
 
-- `npm test`: 35/35; server/web typecheck and production build passed локально и на VPS, включая cross-process torrent hash resume, повреждённый checkpoint, pause gate, TCP transport, delete API, VK relay и directory XSPF regressions.
+- `npm test`: 36/36; server/web typecheck and production build passed локально и на VPS, включая cross-process torrent hash resume, повреждённый checkpoint, shutdown race, pause gate, TCP transport, delete API, VK relay и directory XSPF regressions.
 - Mobile Browser QA `390×844`: delete доступен во всех трёх вкладках, synthetic row удаляется, console errors отсутствуют.
-- Public health, current release, один controlled PM2 restart без отката torrent checkpoint, production delete smoke `204`, WebDAV auth contract and production assets verified.
+- Public/local health, current release и два restart/deploy продолжения без отката torrent checkpoint проверены. На повторном restart финального кода число исторических SQLite shutdown errors осталось `2 → 2`; production delete smoke `204`, WebDAV auth contract and production assets verified.
 - Synthetic media удалён recoverably в Yandex Trash; remote pull test destination отсутствует.
-- На VPS активен `0c33cfb`, rollback-каталоги `ec981aa` и `a952d84` сохранены; свободно около `1.7 GiB`.
+- На VPS активен `2742c0e`, rollback `0c33cfb`; старые `ec981aa` и `a952d84` удалены, свободно около `1.8 GiB`.
 
 # Known limits
 

@@ -22,6 +22,7 @@ export interface JobFile {
   size: number
   status: JobFileStatus
   bytesTransferred: number
+  verified: boolean
 }
 
 export interface Job {

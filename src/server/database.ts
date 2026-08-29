@@ -391,13 +391,13 @@ function toInternalFile(row: JobFileRow): InternalJobFile {
     id: row.id, jobId: row.job_id, index: row.file_index, relativePath: row.relative_path,
     destinationPath: row.destination_path, size: row.size, status: row.status,
     bytesTransferred: row.bytes_transferred, md5: row.md5, sha256: row.sha256, uploadHref: row.upload_href,
-    sourceCheckpoint: row.source_checkpoint,
+    sourceCheckpoint: row.source_checkpoint, verified: Boolean(row.md5 && row.sha256),
   }
 }
 
 function toPublicFile(file: JobFile): JobFile {
   return {
     id: file.id, index: file.index, relativePath: file.relativePath, destinationPath: file.destinationPath,
-    size: file.size, status: file.status, bytesTransferred: file.bytesTransferred,
+    size: file.size, status: file.status, bytesTransferred: file.bytesTransferred, verified: file.verified,
   }
 }

@@ -26,3 +26,25 @@ test('Yandex uploader отправляет промежуточный Content-Ra
     globalThis.fetch = originalFetch
   }
 })
+
+test('Yandex upload offset восстанавливается без заранее известных хешей файла', async () => {
+  const originalFetch = globalThis.fetch
+  const seenHeaders: Headers[] = []
+  let calls = 0
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1
+    seenHeaders.push(new Headers(init?.headers))
+    return new Response(null, { status: 200, headers: { 'Content-Length': '3145728' } })
+  }) as typeof fetch
+  try {
+    const offset = await new YandexDiskAdapter('x'.repeat(32)).getStableUploadOffset(
+      'https://uploader.disk.yandex.net/upload/id', 10_000_000, 0,
+    )
+    assert.equal(offset, 3_145_728)
+    assert.equal(calls, 4)
+    assert.ok(seenHeaders.every((headers) => headers.get('size') === '10000000'))
+    assert.ok(seenHeaders.every((headers) => !headers.has('etag') && !headers.has('sha256')))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

@@ -225,10 +225,13 @@ export class TorrentTransfer {
       file = this.database.updateJobFile(file.id, { status: 'pending', bytesTransferred: 0, uploadHref: null })
     }
 
-    let digests: FileDigests
-    if (file.md5 && file.sha256) {
-      digests = { md5: file.md5, sha256: file.sha256 }
-    } else {
+    let digests: FileDigests | null = file.md5 && file.sha256
+      ? { md5: file.md5, sha256: file.sha256 }
+      : null
+
+    // Finish checkpoints created by releases that hashed the whole torrent
+    // before starting the upload. New files use the one-pass path below.
+    if (!digests && file.status === 'hashing' && file.sourceCheckpoint) {
       transfer.phase = 'hashing'
       const hash = await createResumableTorrentHash(file.size, file.sourceCheckpoint)
       if (hash.discardedCheckpoint) {
@@ -272,7 +275,7 @@ export class TorrentTransfer {
 
     const existing = await this.storage.getMetadataOrNull(file.destinationPath)
     if (existing) {
-      if (existing.type === 'file' && existing.size === file.size && existing.md5 === digests.md5) {
+      if (digests && existing.type === 'file' && existing.size === file.size && existing.md5 === digests.md5) {
         this.database.updateJobFile(file.id, { status: 'completed', bytesTransferred: file.size })
         this.updateAggregate(jobId, 0)
         this.database.addEvent(jobId, 'info', `Уже сохранён и проверен: ${file.relativePath}`)
@@ -286,21 +289,52 @@ export class TorrentTransfer {
     let offset = 0
     if (uploadHref) {
       try {
-        offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
+        offset = await this.storage.getStableUploadOffset(uploadHref, file.size)
       } catch {
+        if (file.sourceCheckpoint || file.bytesTransferred > 0) {
+          throw new Error('Яндекс временно не подтвердил сохранённую отметку; повторите позже')
+        }
         uploadHref = null
         this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
       }
     }
 
-    this.database.updateJobFile(file.id, { status: 'transferring', bytesTransferred: offset })
+    let hash: ResumableTorrentHash | null = null
+    if (!digests) {
+      hash = await createResumableTorrentHash(file.size, file.sourceCheckpoint)
+      if (hash.discardedCheckpoint) {
+        this.database.addEvent(jobId, 'info', 'Повреждённая контрольная точка потока отброшена')
+      }
+      if (hash.offset > offset) {
+        if (offset !== 0) throw new Error('Контрольная точка хеша опережает подтверждённые данные Яндекс Диска')
+        hash = await createResumableTorrentHash(file.size, null)
+        this.database.updateJobFile(file.id, { sourceCheckpoint: null })
+        this.database.addEvent(jobId, 'info', 'Сессия Яндекс Диска начата заново; контрольная точка потока сброшена')
+      }
+      if (hash.offset < offset) {
+        this.database.addEvent(jobId, 'info', `Восстанавливается проверка до отметки Яндекс Диска ${formatBytes(offset)}`)
+        await catchUpTorrentHash(
+          torrent, torrentFile, signal, hash, offset, this.config.torrentMetadataTimeoutMs,
+          (checkpoint) => this.database.updateJobFile(file.id, { sourceCheckpoint: checkpoint }),
+          () => {
+            this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source' })
+            this.notify()
+          },
+        )
+      }
+    }
+
+    this.database.updateJobFile(file.id, {
+      status: 'transferring', bytesTransferred: offset,
+      sourceCheckpoint: hash ? hash.checkpoint() : file.sourceCheckpoint,
+    })
     this.database.updateJob(jobId, {
       status: 'transferring', errorMessage: null, speedBytesPerSecond: 0,
       sourceSpeedBytesPerSecond: 0, yandexUploadSpeedBytesPerSecond: 0,
       bottleneck: null, bufferedBytes: 0,
       bufferCapacityBytes: Math.min(uploadChunkBytes, file.size - offset),
     })
-    this.database.addEvent(jobId, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача: ${file.relativePath}`)
+    this.database.addEvent(jobId, 'info', `${offset > 0 ? 'Продолжается' : 'Началась'} передача${hash ? ' с одновременной проверкой' : ''}: ${file.relativePath}`)
     this.updateAggregate(jobId, 0)
     this.notify()
 
@@ -312,12 +346,13 @@ export class TorrentTransfer {
         this.database.updateJobFile(file.id, { uploadHref })
       }
 
-      const length = Math.min(uploadChunkBytes, file.size - offset)
+      const rangeStart = offset
+      const length = Math.min(uploadChunkBytes, file.size - rangeStart)
       const buffered = createBufferedBytesReporter(jobId, length, this.database, this.notify)
       const sourceRead = await readExactBufferWithRetry(
         () => readTorrentFile(
-          torrent, torrentFile, offset, signal,
-          createSourceSpeedReporter(jobId, offset, this.database, this.notify),
+          torrent, torrentFile, rangeStart, signal,
+          createSourceSpeedReporter(jobId, rangeStart, this.database, this.notify),
           this.config.torrentMetadataTimeoutMs,
           () => {
             this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source' })
@@ -329,7 +364,7 @@ export class TorrentTransfer {
         buffered,
         async (attempt) => {
           this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source', bufferedBytes: 0 })
-          this.database.addEvent(jobId, 'info', `Источник torrent прервался, повтор ${attempt}/3 с ${formatBytes(offset)}`)
+          this.database.addEvent(jobId, 'info', `Источник torrent прервался, повтор ${attempt}/3 с ${formatBytes(rangeStart)}`)
           this.notify()
           await delay(400 * (2 ** (attempt - 1)), signal)
         },
@@ -347,13 +382,27 @@ export class TorrentTransfer {
       try {
         const uploadStarted = performance.now()
         await this.storage.uploadRange(
-          uploadHref, offset, file.size, measured.body, signal, this.config.uploadTimeoutMs, length,
+          uploadHref, rangeStart, file.size, measured.body, signal, this.config.uploadTimeoutMs, length,
         )
         const uploadRequestMs = performance.now() - uploadStarted
         const yandexUploadSpeed = bytesPerSecond(length, uploadRequestMs)
-        offset += length
+        offset = rangeStart + length
         consecutiveFailures = 0
-        this.database.updateJobFile(file.id, { bytesTransferred: offset })
+        if (hash) {
+          commitTorrentHashBuffer(hash, rangeStart, offset, buffer)
+          if (offset === file.size) {
+            digests = hash.digest()
+            this.database.updateJobFile(file.id, {
+              bytesTransferred: offset, ...digests, sourceCheckpoint: null,
+            })
+          } else {
+            this.database.updateJobFile(file.id, {
+              bytesTransferred: offset, sourceCheckpoint: hash.checkpoint(),
+            })
+          }
+        } else {
+          this.database.updateJobFile(file.id, { bytesTransferred: offset })
+        }
         this.updateAggregate(jobId, yandexUploadSpeed)
         this.database.updateJob(jobId, {
           sourceSpeedBytesPerSecond: sourceSpeed,
@@ -371,13 +420,28 @@ export class TorrentTransfer {
         consecutiveFailures += 1
         if (consecutiveFailures >= 4) throw error
         try {
-          offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
+          const stableOffset = await this.storage.getStableUploadOffset(uploadHref, file.size)
+          if (stableOffset < rangeStart || stableOffset > rangeStart + length) {
+            throw new Error('Яндекс вернул отметку вне текущего диапазона')
+          }
+          if (hash && stableOffset > rangeStart) {
+            commitTorrentHashBuffer(hash, rangeStart, stableOffset, buffer)
+            if (stableOffset === file.size) {
+              digests = hash.digest()
+              this.database.updateJobFile(file.id, {
+                bytesTransferred: stableOffset, ...digests, sourceCheckpoint: null,
+              })
+            } else {
+              this.database.updateJobFile(file.id, {
+                bytesTransferred: stableOffset, sourceCheckpoint: hash.checkpoint(),
+              })
+            }
+          }
+          offset = stableOffset
         } catch {
-          uploadHref = null
-          offset = 0
-          this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
+          throw error
         }
-        this.database.updateJobFile(file.id, { bytesTransferred: offset })
+        if (!hash) this.database.updateJobFile(file.id, { bytesTransferred: offset })
         this.database.addEvent(jobId, 'info', `Соединение восстановлено с отметки ${formatBytes(offset)}`)
         this.updateAggregate(jobId, 0)
         this.database.updateJob(jobId, { bufferedBytes: 0 })
@@ -386,6 +450,7 @@ export class TorrentTransfer {
       }
     }
 
+    if (!digests) throw new Error('Не удалось завершить проверку переданного файла')
     await this.storage.waitForFileMetadata(file.destinationPath, file.size, digests.md5)
 
     this.database.updateJobFile(file.id, { status: 'completed', bytesTransferred: file.size })
@@ -498,6 +563,50 @@ async function hashTorrentFile(
   }
   persistCheckpoint(true)
   return hash.digest()
+}
+
+async function catchUpTorrentHash(
+  torrent: any,
+  file: any,
+  signal: AbortSignal,
+  hash: ResumableTorrentHash,
+  targetOffset: number,
+  inactivityTimeoutMs: number,
+  onCheckpoint: (checkpoint: string) => void,
+  onInactive?: () => void,
+): Promise<void> {
+  while (hash.offset < targetOffset) {
+    const rangeStart = hash.offset
+    const length = Math.min(uploadChunkBytes, targetOffset - rangeStart)
+    const source = await readExactBufferWithRetry(
+      () => readTorrentFile(torrent, file, rangeStart, signal, undefined, inactivityTimeoutMs, onInactive),
+      length,
+      signal,
+      undefined,
+      async (attempt) => {
+        refreshTorrentPeers(torrent)
+        await delay(400 * (2 ** (attempt - 1)), signal)
+      },
+    )
+    hash.update(source.buffer)
+    onCheckpoint(hash.checkpoint())
+  }
+}
+
+export function commitTorrentHashBuffer(
+  hash: ResumableTorrentHash,
+  rangeStart: number,
+  confirmedOffset: number,
+  buffer: Uint8Array,
+): void {
+  const confirmedLength = confirmedOffset - rangeStart
+  if (hash.offset !== rangeStart
+    || !Number.isSafeInteger(confirmedLength)
+    || confirmedLength <= 0
+    || confirmedLength > buffer.byteLength) {
+    throw new Error('Подтверждённый диапазон Яндекс Диска не совпадает с контрольной точкой хеша')
+  }
+  hash.update(buffer.subarray(0, confirmedLength))
 }
 
 export async function createResumableTorrentHash(

@@ -105,19 +105,19 @@ export class YandexDiskAdapter {
     await response.body?.cancel()
   }
 
-  async getStableUploadOffset(href: string, digests: FileDigests, totalBytes: number): Promise<number> {
+  async getStableUploadOffset(href: string, totalBytes: number, pollIntervalMs = 1_000): Promise<number> {
     const deadline = Date.now() + 90_000
     let previous: number | null = null
     let stableCount = 0
     while (Date.now() < deadline) {
-      const uploaded = await this.getUploadedSize(href, digests, totalBytes)
+      const uploaded = await this.getUploadedSize(href, totalBytes)
       if (uploaded === previous) stableCount += 1
       else {
         previous = uploaded
         stableCount = 1
       }
       if (stableCount >= 4) return uploaded
-      await delay(1_000)
+      await delay(pollIntervalMs)
     }
     throw new Error('Яндекс Диск не зафиксировал стабильную контрольную точку загрузки')
   }
@@ -137,10 +137,10 @@ export class YandexDiskAdapter {
     throw new Error(`Файл не прошёл итоговую проверку${lastError instanceof Error ? `: ${lastError.message}` : ''}`)
   }
 
-  private async getUploadedSize(href: string, digests: FileDigests, totalBytes: number): Promise<number> {
+  private async getUploadedSize(href: string, totalBytes: number): Promise<number> {
     const response = await fetch(validateUploadHref(href), {
       method: 'HEAD',
-      headers: { Etag: digests.md5, Sha256: digests.sha256, Size: String(totalBytes) },
+      headers: { Size: String(totalBytes) },
       redirect: 'error',
       signal: AbortSignal.timeout(30_000),
     })

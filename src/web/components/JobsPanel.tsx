@@ -142,7 +142,7 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
       {tab === 'files' && (job.files.length > 0
         ? <div className="file-list">{job.files.map((file) => <div className="file-list-row" key={file.id}>
           <Icon name={file.status === 'completed' ? 'check' : 'files'} />
-          <span><strong>{file.relativePath}</strong><small>{formatBytes(file.size)} · {fileStatusLabel(file.status)}</small></span>
+          <span><strong>{file.relativePath}</strong><small>{formatBytes(file.size)} · {fileStatusLabel(file.status)}{file.verified && file.status === 'transferring' ? ' · проверка завершена' : ''}</small></span>
           <span>{file.size > 0 ? `${Math.round(file.bytesTransferred / file.size * 100)}%` : '—'}</span>
         </div>)}</div>
         : <div className="detail-placeholder"><Icon name="files"/><span>{filesPlaceholder(job)}</span></div>)}
@@ -168,7 +168,9 @@ function DetailButton({ active, icon, label, onClick }: { active: boolean, icon:
 }
 
 function Progress({ job }: { job: Job }) {
-  const value = job.progress === null ? null : Math.round(job.progress * 100)
+  const stageValue = job.progress === null ? null : Math.round(job.progress * 100)
+  const twoPass = usesLegacyTwoPassProgress(job)
+  const value = stageValue === null ? null : Math.round((twoPass ? 0.5 + job.progress! / 2 : job.progress!) * 100)
   const indeterminate = value === null && ['transferring', 'verifying'].includes(job.status)
   return <span className="progress-wrap">
     <span className="progress-label">{value === null ? statusLabel(job.status) : `${value}%`}</span>
@@ -184,7 +186,17 @@ function progressBytesLabel(job: Job): string {
     && ['transferring', 'verifying'].includes(job.status)) {
     return 'Яндекс не сообщает прогресс по байтам'
   }
+  if (usesLegacyTwoPassProgress(job) && job.totalBytes) {
+    return `Проверка завершена · Яндекс: ${formatBytes(job.bytesTransferred ?? 0)} из ${formatBytes(job.totalBytes)}`
+  }
   return job.totalBytes ? `${formatBytes(job.bytesTransferred ?? 0)} из ${formatBytes(job.totalBytes)}` : 'Объём уточняется'
+}
+
+function usesLegacyTwoPassProgress(job: Job): boolean {
+  return !isRemoteImportSource(job.sourceKind)
+    && job.status === 'transferring'
+    && job.files.length === 1
+    && job.files[0]?.verified === true
 }
 
 function EmptyState({ filter }: { filter: JobFilter }) {
@@ -211,7 +223,9 @@ function subtitle(job: Job): string {
   if (job.status === 'verifying') return isRemoteImportSource(job.sourceKind)
     ? 'Проверка на Яндекс Диске'
     : job.sourceKind === 'rutube' ? 'Проверка потока Rutube' : 'Проверка торрент-источника'
-  return 'Передача на Яндекс Диск'
+  return usesLegacyTwoPassProgress(job)
+    ? 'Проверка завершена · передача на Яндекс Диск'
+    : 'Передача на Яндекс Диск'
 }
 
 function statusLabel(status: JobStatus): string {

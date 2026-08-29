@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  createResumableTorrentHash, PauseGate, readTorrentMetadata, refreshTorrentPeers, torrentClientOptions,
+  commitTorrentHashBuffer, createResumableTorrentHash, PauseGate, readTorrentMetadata,
+  refreshTorrentPeers, torrentClientOptions,
 } from './torrent-transfer.js'
 
 test('torrent worker disables crash-prone native uTP transport', () => {
@@ -60,6 +61,21 @@ test('повреждённая или чужая torrent hash checkpoint без�
   assert.equal(wrongSize.restored, false)
   assert.equal(wrongSize.discardedCheckpoint, true)
   assert.equal(wrongSize.offset, 0)
+})
+
+test('torrent hash продвигается только до подтверждённого Яндексом offset', async () => {
+  const content = Buffer.from('abcdefgh')
+  const hash = await createResumableTorrentHash(content.byteLength, null)
+  commitTorrentHashBuffer(hash, 0, 3, content)
+  assert.equal(hash.offset, 3)
+
+  const resumed = await createResumableTorrentHash(content.byteLength, hash.checkpoint())
+  commitTorrentHashBuffer(resumed, 3, content.byteLength, content.subarray(3))
+  assert.deepEqual(resumed.digest(), {
+    md5: createHash('md5').update(content).digest('hex'),
+    sha256: createHash('sha256').update(content).digest('hex'),
+  })
+  assert.throws(() => commitTorrentHashBuffer(resumed, 0, 1, content), /не совпадает/u)
 })
 
 test('torrent metadata восстанавливается через shared runtime после смены release', async () => {

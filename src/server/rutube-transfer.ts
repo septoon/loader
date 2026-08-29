@@ -118,7 +118,7 @@ export class RutubeTransfer {
         this.database.addEvent(job.id, 'info', 'Rutube: восстанавливается контрольная точка передачи')
         this.notify()
         try {
-          offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
+          offset = await this.storage.getStableUploadOffset(uploadHref, file.size)
         } catch {
           uploadHref = null
           this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
@@ -198,7 +198,7 @@ export class RutubeTransfer {
           consecutiveFailures += 1
           if (consecutiveFailures >= 4) throw error
           try {
-            offset = await this.storage.getStableUploadOffset(uploadHref, digests, file.size)
+            offset = await this.storage.getStableUploadOffset(uploadHref, file.size)
           } catch {
             uploadHref = null
             offset = 0

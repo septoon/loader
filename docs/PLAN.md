@@ -25,6 +25,7 @@
 - [x] Выполнить deploy и public health/auth/static/SSE smoke после разрешения пользователя.
 - [x] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
 - [x] Сохранять MD5/SHA-256 state torrent hash-pass в SQLite и продолжать проверку после source timeout, PM2 restart и deploy без отката к нулю.
+- [x] Убрать двойное чтение torrent: передавать source на Яндекс в один проход, синхронизируя hash state с подтверждённым remote offset и не сохраняя полный файл на VPS.
 - [x] Выпустить production hotfix torrent cache после подтверждения пользователя:
   - [x] Не снимать selection активного read-window при заполнении bounded cache.
   - [x] Показывать фактический прогресс и скорость hash-pass.
@@ -48,8 +49,8 @@
 ## Подтверждённая транспортная архитектура
 
 - Direct HTTP: remote import Yandex Disk, затем проверка operation и metadata; media bytes не проходят через VPS.
-- Streaming fallback: последовательные 8-МиБ `Content-Range`; после ошибки `HEAD` с full MD5/SHA-256/size, стабилизация server offset, затем продолжение с точной отметки.
-- Torrent: WebTorrent sequential stream -> bounded piece-cache -> bounded 8-МиБ RAM-buffer -> Yandex range uploader; при сбое повторно читать source с server offset.
+- Streaming fallback: последовательные 8-МиБ `Content-Range`; после ошибки `HEAD` с `Size` стабилизирует server offset, затем transport продолжает с точной подтверждённой отметки.
+- Torrent: WebTorrent sequential stream -> bounded piece-cache -> bounded 8-МиБ RAM-buffer -> Yandex range uploader в один проход; MD5/SHA-256 state сохраняется вместе с подтверждённым server offset, а crash-window догоняется bounded reread source без full staging.
 - Rutube: официальный play-options API -> максимум 720p HLS/MPEG-TS -> bounded hash-pass -> 8-МиБ Yandex ranges с точным resume по segment checkpoint.
 - VK Видео: pinned `yt-dlp` извлекает progressive MP4 максимум 1080p; Яндекс Диск забирает его через job-scoped Basic-auth relay Loader, потому что signed media URL привязан к IP и требует заголовки клиента. Relay не staging-ит файл и поддерживает range.
 - Если source нельзя повторно прочитать, full hashes неизвестны или upload URL потерян, job честно переходит в Retry; полный staging на VPS не использовать скрытно.

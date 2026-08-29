@@ -1,5 +1,27 @@
 # Progress
 
+## 2026-08-30 — torrent в один проход без полного файла на VPS
+
+Причина пользовательского `100% → 0%` установлена по production state path: прежний torrent worker сначала целиком читал файл для MD5/SHA-256, показывая это как проверку до `100%`, затем открывал тот же torrent с byte `0` и только после этого начинал передачу на Яндекс Диск. Это не было потерей уже записанных на Яндекс байтов, но являлось двойным чтением source и вводящим в заблуждение сбросом progress между фазами.
+
+Live read-only `HEAD` текущей Yandex upload session подтвердил, что durable server offset возвращается с одним `Size`, без заранее вычисленных `Etag`/`Sha256`. Release `ff5f28a` использует это измеренное поведение так:
+
+- новые torrent jobs не выполняют предварительный полный hash-pass;
+- source читается последовательно один раз: bounded buffer `8 MiB` → отдельный Yandex `Content-Range` PUT;
+- MD5/SHA-256 state продвигается только до префикса, фактически подтверждённого Яндексом, и сохраняется в SQLite вместе с тем же remote offset;
+- после сетевой ошибки или рестарта Loader получает remote offset через `HEAD`; если Яндекс успел принять часть буфера до crash, hash state догоняется повторным чтением только этого подтверждённого диапазона, без полного staging;
+- старые jobs, уже находившиеся в `verifying`, совместимо завершают старый hash-pass; их готовые hashes используются для текущей upload session;
+- UI для legacy двухфазной задачи показывает монотонный общий progress и отдельно пишет, что проверка завершена; новые one-pass jobs имеют единственный progress `0 → 100%` по подтверждённым Yandex bytes.
+
+Проверка и production:
+
+- локально: typecheck, tests `38/38`, production build — passed;
+- в exact release-каталоге VPS: typecheck, tests `38/38`, production build — passed;
+- regression tests подтверждают, что hash продвигается только до подтверждённого Yandex offset, а upload offset восстанавливается без заранее известных hashes;
+- production current — `ff5f28a`; PM2 `loader`/`loader-vlc` online на этом release с zero restarts, public health `ok`, закрытые API/VLC endpoints без auth возвращают `401`;
+- активная legacy задача после deploy продолжила текущую Yandex session без сброса: `58,720,256 → 83,886,080` bytes, status `transferring`, error null; live Source Speed `18,422,523 B/s`, Yandex Upload Speed `131,024 B/s`, bottleneck `yandex`;
+- `qBittorrent-nox` не устанавливался: обычный клиент потребовал бы полный media staging, при этом на VPS свободно около `1.8 GiB`, а пользовательский файл имеет размер `1,575,770,112` bytes. Loader хранит только bounded RAM/piece cache и служебные checkpoints.
+
 ## 2026-08-30 — персистентный checkpoint проверки торрента
 
 Production job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` подтвердил оставшееся окно потери прогресса. После release `ec981aa` Loader не падал и PM2 не перезапускался, но TCP-пиры дважды переставали отдавать следующую необходимую piece. Через 10 минут inactivity задача штатно завершалась ошибкой. Последняя попытка дошла до `704,643,072 / 1,575,770,112` bytes (`44.72%`), однако `job_files.source_checkpoint` оставался `NULL`, MD5/SHA-256 ещё не были завершены, поэтому Retry неизбежно начинал hash-pass с нуля.

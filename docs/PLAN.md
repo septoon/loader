@@ -24,6 +24,7 @@
   - [ ] Добавить backup/retention и расширенную observability.
 - [x] Выполнить deploy и public health/auth/static/SSE smoke после разрешения пользователя.
 - [x] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
+- [x] Сохранять MD5/SHA-256 state torrent hash-pass в SQLite и продолжать проверку после source timeout, PM2 restart и deploy без отката к нулю.
 - [x] Выпустить production hotfix torrent cache после подтверждения пользователя:
   - [x] Не снимать selection активного read-window при заполнении bounded cache.
   - [x] Показывать фактический прогресс и скорость hash-pass.

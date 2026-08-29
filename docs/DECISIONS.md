@@ -114,12 +114,14 @@ Production-замер пользовательского Rutube показал 3
 
 Активный VK import имеет те же ограничения pause/cancel, что обычный Yandex remote import. Source/Yandex скорости в UI помечаются как не измеряемые: при pull-relay один demand-driven поток не позволяет достоверно разделить source и downstream throughput.
 
-## D-016 — Torrent использует TCP и сохраняет живой hash-pass при паузе
+## D-016 — Torrent использует TCP и персистентный hash-pass
 
 **Статус:** реализовано и проверено на production.
 
 `utp-native@2.5.3` дважды завершил весь Loader необработанным `UTP_ECONNRESET` при штатном peer disconnect. Torrent client использует поддержанный WebTorrent option `utp: false`; TCP, tracker discovery, manual peer reconnect и bounded cache остаются активны. Обработка peer error не должна иметь возможность уронить API/SSE процесс.
 
-Hash state MD5/SHA-256 нельзя безопасно сериализовать. Поэтому пауза во время hash-pass удерживает WebTorrent client, bounded cache и hash objects в памяти, а resume открывает peers/tracker и продолжает с текущего offset. Process/deploy crash до завершения hash-pass всё ещё требует полного повторного hash-pass; после сохранения digests upload resume использует server-authoritative Yandex checkpoint.
+Пауза во время hash-pass удерживает WebTorrent client, bounded cache и hash objects в памяти. Для source timeout, process restart и deploy используется pinned `hash-wasm 4.12.0`: `save()`/`load()` сериализуют совместимые MD5/SHA-256 states. SQLite checkpoint содержит версию формата, ожидаемый размер, offset и два base64url state и обновляется каждые 4 МиБ или перед контролируемой остановкой. Возобновление начинает torrent iterator с этого offset; полный медиофайл на VPS не сохраняется.
+
+Размер, формат и встроенная сигнатура WASM state проверяются до использования. Несовместимый или повреждённый checkpoint отбрасывается. Обновление `hash-wasm` требует проверки совместимости либо завершения активных hash-pass. При жёстком `SIGKILL` возможно потерять только интервал после последней 4-МиБ отметки, а не весь прогресс. После готовых digests upload resume использует server-authoritative Yandex checkpoint.
 
 Отмена и удаление разделены. Старый cancel endpoint остаётся совместимым, новый remove endpoint удаляет только запись Loader и её служебные данные. Уже сохранённый media-файл на Яндекс Диске не удаляется автоматически.

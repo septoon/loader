@@ -15,6 +15,7 @@ import { JobRunner } from './job-runner.js'
 import type { MediaCredentials } from './media-secrets.js'
 import { registerMediaWebDav } from './media-webdav.js'
 import { analyzeSource, InputError, sanitizePublicError, selectTorrentFiles } from './security.js'
+import { registerTorrentRelay } from './torrent-relay.js'
 import { registerVkVideoRelay } from './vk-relay.js'
 import { resolveVkVideoSource } from './vk-video.js'
 import type { YandexMediaLibrary } from './yandex-media-library.js'
@@ -91,6 +92,7 @@ export async function buildApp({ config, database, runner, media }: Dependencies
   })
 
   registerVkVideoRelay(app, database, config)
+  if (runner.torrentRelayProvider) registerTorrentRelay(app, database, config, runner.torrentRelayProvider)
   if (media) registerMediaWebDav(app, media.library, media.credentials)
 
   app.post<{ Body: { source?: string, destination?: Destination } }>('/api/sources/analyze', {

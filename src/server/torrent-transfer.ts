@@ -2,6 +2,7 @@ import { readFile, realpath, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { createMD5, createSHA256, type IHasher } from 'hash-wasm'
+import { Readable } from 'node:stream'
 import WebTorrent from 'webtorrent'
 import type { AppConfig } from './config.js'
 import { BoundedPieceStore } from './bounded-piece-store.js'
@@ -10,12 +11,15 @@ import { selectTorrentFiles } from './security.js'
 import {
   bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBufferWithRetry, uploadChunkBytes,
 } from './transfer-buffer.js'
+import { buildTorrentRelayUrl } from './torrent-relay-auth.js'
 import { YandexDiskAdapter, YandexUploadSessionExpiredError, type FileDigests } from './yandex-disk.js'
 
 interface ActiveTransfer {
   controller: AbortController
   client: any
-  phase: 'starting' | 'hashing' | 'transferring'
+  torrent: any | null
+  relayError: Error | null
+  phase: 'starting' | 'hashing' | 'transferring' | 'remote-import'
   pauseGate: PauseGate
   finished: Promise<void>
   finish: () => void
@@ -144,7 +148,8 @@ export class TorrentTransfer {
     let finish: () => void = () => undefined
     const finished = new Promise<void>((resolve) => { finish = resolve })
     const transfer: ActiveTransfer = {
-      controller, client, phase: 'starting', pauseGate: new PauseGate(), finished, finish,
+      controller, client, torrent: null, relayError: null,
+      phase: 'starting', pauseGate: new PauseGate(), finished, finish,
     }
     this.#active.set(job.id, transfer)
 
@@ -157,6 +162,7 @@ export class TorrentTransfer {
         maxBytes: this.config.pieceCacheMaxBytes,
         reserveBytes: this.config.diskReserveBytes,
       })
+      transfer.torrent = torrent
       controller.signal.throwIfAborted()
 
       const descriptors = torrent.files.map((file: any, index: number) => ({
@@ -180,13 +186,17 @@ export class TorrentTransfer {
       this.database.addEvent(job.id, 'info', `Получены метаданные: ${files.length} файл(ов), ${formatBytes(totalBytes)}`)
       this.notify()
 
-      for (const fileRecord of files) {
-        controller.signal.throwIfAborted()
-        const torrentFile = torrent.files[fileRecord.index]
-        if (!torrentFile || Number(torrentFile.length) !== fileRecord.size) {
-          throw new Error(`Состав торрента изменился: ${fileRecord.relativePath}`)
+      if (files.length === 1) {
+        await this.processSingleFileRemoteImport(job.id, files[0]!, transfer)
+      } else {
+        for (const fileRecord of files) {
+          controller.signal.throwIfAborted()
+          const torrentFile = torrent.files[fileRecord.index]
+          if (!torrentFile || Number(torrentFile.length) !== fileRecord.size) {
+            throw new Error(`Состав торрента изменился: ${fileRecord.relativePath}`)
+          }
+          await this.processFile(job.id, torrent, torrentFile, fileRecord, transfer)
         }
-        await this.processFile(job.id, torrent, torrentFile, fileRecord, transfer)
       }
 
       const completed = this.database.updateJob(job.id, {
@@ -210,6 +220,87 @@ export class TorrentTransfer {
         transfer.finish()
       }
     }
+  }
+
+  createRelayStream(jobId: string, fileIndex: number, start: number, end: number): Readable {
+    const transfer = this.#active.get(jobId)
+    const torrentFile = transfer?.torrent?.files?.[fileIndex]
+    if (!transfer || !torrentFile || transfer.controller.signal.aborted) {
+      throw new Error('Торрент-поток сейчас недоступен')
+    }
+    const expectedSize = Number(torrentFile.length)
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      || start < 0 || end < start || end >= expectedSize) {
+      throw new Error('Некорректный диапазон торрент-потока')
+    }
+    const source = readTorrentFile(
+      transfer.torrent, torrentFile, start, transfer.controller.signal,
+      undefined, this.config.torrentMetadataTimeoutMs,
+      () => refreshTorrentPeers(transfer.torrent),
+    )
+    const stream = Readable.from(limitTorrentRange(source, end - start + 1), { objectMode: false })
+    stream.once('error', (error) => {
+      transfer.relayError = error instanceof Error ? error : new Error('Торрент-поток оборвался')
+    })
+    return stream
+  }
+
+  private async processSingleFileRemoteImport(
+    jobId: string,
+    initialFile: InternalJobFile,
+    transfer: ActiveTransfer,
+  ): Promise<void> {
+    const signal = transfer.controller.signal
+    transfer.phase = 'remote-import'
+    let file = initialFile
+    let operationHref = this.database.getInternalJob(jobId)?.operationHref ?? null
+
+    if (file.status === 'completed' && file.md5) {
+      const existing = await this.storage.getMetadataOrNull(file.destinationPath)
+      if (existing?.type === 'file' && existing.size === file.size && existing.md5 === file.md5) return
+      file = this.database.updateJobFile(file.id, { status: 'pending', bytesTransferred: 0, md5: null })
+    }
+
+    if (!operationHref) {
+      const existing = await this.storage.getMetadataOrNull(file.destinationPath)
+      if (existing) throw new Error(`Путь назначения уже занят другим файлом: ${file.destinationPath}`)
+      this.database.updateJobFile(file.id, {
+        status: 'transferring', bytesTransferred: 0, uploadHref: null, sourceCheckpoint: null,
+      })
+      this.database.updateJob(jobId, {
+        status: 'transferring', progress: null, bytesTransferred: null,
+        speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0, yandexUploadSpeedBytesPerSecond: 0,
+        bottleneck: null, bufferedBytes: 0, bufferCapacityBytes: null, errorMessage: null,
+      })
+      this.database.addEvent(jobId, 'info', 'Яндекс Диск начал быстрый импорт торрент-потока через защищённый relay')
+      this.notify()
+      operationHref = await this.storage.startRemoteImport(
+        buildTorrentRelayUrl(this.config, jobId, file.index), file.destinationPath,
+      )
+      this.database.updateJob(jobId, { operationHref })
+    }
+
+    while (true) {
+      signal.throwIfAborted()
+      const operation = await this.storage.getOperation(operationHref)
+      if (operation.status === 'success') break
+      if (operation.status === 'failed') {
+        this.database.updateJob(jobId, { operationHref: null })
+        if (transfer.relayError) throw transfer.relayError
+        throw new Error('Яндекс Диск сообщил об ошибке быстрого импорта торрент-потока')
+      }
+      await delay(1_500, signal)
+    }
+
+    const metadata = await waitForRemoteMetadata(this.storage, file.destinationPath, file.size, signal)
+    this.database.updateJobFile(file.id, {
+      status: 'completed', bytesTransferred: file.size, md5: metadata.md5,
+      uploadHref: null, sourceCheckpoint: null,
+    })
+    this.database.updateJob(jobId, { operationHref: null })
+    this.database.addEvent(jobId, 'info', `Быстрый импорт завершён и проверен: ${file.relativePath}`)
+    this.updateAggregate(jobId, 0)
+    this.notify()
   }
 
   private async processFile(
@@ -742,6 +833,35 @@ async function * readTorrentFile(
     if (releasePiece !== null) await pieceStore?.release?.(releasePiece)
     await iterator.return?.()
   }
+}
+
+async function * limitTorrentRange(source: AsyncIterable<Buffer>, length: number): AsyncGenerator<Buffer> {
+  let remaining = length
+  for await (const chunk of source) {
+    if (remaining <= 0) return
+    const output = chunk.byteLength <= remaining ? chunk : chunk.subarray(0, remaining)
+    remaining -= output.byteLength
+    yield output
+    if (remaining === 0) return
+  }
+  if (remaining > 0) throw new TorrentSourceUnavailableError('Торрент-поток завершился раньше диапазона')
+}
+
+async function waitForRemoteMetadata(
+  storage: YandexDiskAdapter,
+  destinationPath: string,
+  expectedSize: number,
+  signal: AbortSignal,
+): Promise<{ md5: string }> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    signal.throwIfAborted()
+    const metadata = await storage.getMetadataOrNull(destinationPath)
+    if (metadata?.type === 'file' && metadata.size === expectedSize && metadata.md5) {
+      return { md5: metadata.md5 }
+    }
+    await delay(1_500, signal)
+  }
+  throw new Error('Яндекс Диск не подтвердил размер и MD5 импортированного файла')
 }
 
 export function refreshTorrentPeers(torrent: any): void {

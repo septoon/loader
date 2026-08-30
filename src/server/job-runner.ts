@@ -31,6 +31,10 @@ export class JobRunner {
       : null
   }
 
+  get torrentRelayProvider(): TorrentTransfer | null {
+    return this.#torrent
+  }
+
   start(): void {
     if (this.#timer) return
     this.#stopping = false

@@ -1,5 +1,31 @@
 # Progress
 
+## 2026-08-30 — устранён ложный `нет пиров` и автоматизирован fresh-session recovery
+
+Production job остановился на `377,487,360 / 1,575,770,112` bytes (`360 MiB`) после четырёх последовательных 10-минутных source timeout. UI показывал `Данные торрента не поступают: нет доступных раздающих пиров`, но отдельная read-only диагностика тем же `.torrent` и тем же TCP WebTorrent transport установила обратное: свежая client session за 22 секунды подключила `41` peer, все `41` имели требуемую piece `180`, и piece была успешно получена.
+
+Корневая причина находилась в recovery Loader:
+
+- `refreshTorrentPeers` включал уже подключённых peers в принудительный `removePeer → addPeer`, обрывая полезные wire-соединения во время inactivity;
+- после timeout три повтора выполнялись внутри того же повреждённого WebTorrent/stream-selection state вместо пересоздания client;
+- после четырёх timeout задача ошибочно переходила в `failed`, хотя tracker и нужная piece были доступны.
+
+Release `279a295`:
+
+- не разрывает подключённые peers при tracker refresh и удаляет peer из connected-set только после закрытия wire;
+- после одного полного source timeout завершает текущий WebTorrent client, переводит job в активное состояние `waiting` и через 30 секунд создаёт fresh peer session с durable Yandex offset;
+- `waiting` остаётся во вкладке `Активные`, поддерживает паузу/отмену/удаление и не отображается как ошибка; очередь новых задач имеет приоритет перед отложенным повтором;
+- waiting retry переживает restart процесса: due-state определяется по сохранённым `status`/`updated_at` в SQLite;
+- legacy progress остаётся монотонным и в состоянии ожидания.
+
+За девять часов между прежним hard failure и ручным Retry временная Yandex upload session истекла: live `HEAD` вернул `404`, итогового файла в `/Media` ещё не существовало. Эти временные `360 MiB` API Яндекса восстановить не позволяет. Release теперь отличает `404/410 expired upload` от временной сетевой ошибки и автоматически создаёт новую upload session; automatic fresh-peer retry предотвращает многочасовое бездействие, из-за которого истекла эта сессия.
+
+Проверка:
+
+- локально и в exact VPS release: typecheck, tests `39/39`, production build — passed;
+- production current — `279a295`; PM2 `loader`/`loader-vlc` online с zero restarts;
+- job автоматически распознал expired session, записал понятное событие и начал новую передачу; два последовательных Yandex checkpoint подтверждены, последний `16,777,216` bytes, Yandex Upload Speed `131,000 B/s`, status `transferring`, error null.
+
 ## 2026-08-30 — torrent в один проход без полного файла на VPS
 
 Причина пользовательского `100% → 0%` установлена по production state path: прежний torrent worker сначала целиком читал файл для MD5/SHA-256, показывая это как проверку до `100%`, затем открывал тот же torrent с byte `0` и только после этого начинал передачу на Яндекс Диск. Это не было потерей уже записанных на Яндекс байтов, но являлось двойным чтением source и вводящим в заблуждение сбросом progress между фазами.

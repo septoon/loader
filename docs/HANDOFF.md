@@ -1,10 +1,12 @@
 # Current state
 
-Production release `ff5f28a` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime, оба online с zero restarts. Public `/api/health`: `ok`, storage configured, torrent available; активна одна пользовательская torrent transfer.
+Production release `279a295` активен на `https://loader.lumastack.ru`. PM2 `loader` и `loader-vlc` используют один release и shared runtime, оба online с zero restarts. Public `/api/health`: `ok`, storage configured, torrent available; активна одна пользовательская torrent transfer.
 
 Причина прежнего `HTTP 502` устранена: `utp-native@2.5.3` дважды выбрасывал необработанный `UTP_ECONNRESET` и завершал Node. Torrent client теперь использует TCP (`utp: false`), сохраняя tracker discovery и bounded cache.
 
 Новые torrent jobs больше не делают полный предварительный hash-pass. Один 8-МиБ source range читается в bounded RAM, отправляется на Яндекс, после чего MD5/SHA-256 state и source checkpoint сохраняются ровно на подтверждённом remote offset. При restart remote offset восстанавливается через `HEAD` с `Size`, без готовых hashes; возможное crash-window догоняется bounded reread source. Старые `verifying` checkpoints остаются совместимы. Пауза upload остаётся Yandex-checkpoint-based. Удаление записей отделено от отмены и доступно во всех status tabs; оно не удаляет media с Яндекс Диска.
+
+Ложный `нет доступных раздающих пиров` устранён в `279a295`. Прежний refresh сам разрывал подключённые wires, а три retry повторяли чтение внутри того же зависшего client state. Свежая production-диагностика нашла `41` peer с нужной piece `180` и получила её за 22 секунды. Теперь connected peers не разрываются; после одного полного inactivity timeout job переходит в активный `waiting`, текущий WebTorrent уничтожается и через 30 секунд создаётся fresh client. Waiting retry хранится в SQLite, переживает restart и не блокирует более новые queued jobs.
 
 Rutube и torrent не используют один многочасовой PUT. Source читается в bounded RAM-buffer максимум 8 MiB, затем отправляется отдельным Yandex `Content-Range`; каждый подтверждённый offset сохраняется durable. Полного media staging на VPS нет. `qBittorrent-nox` не установлен и при текущих `~1.8 GiB` свободного диска не подходит: обычный torrent client потребует место под весь payload.
 
@@ -26,7 +28,7 @@ Job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` передаёт `In.the.Grey.2026.D.
 - До `0c33cfb` последняя попытка достигла `704,643,072` bytes (`44.72%`), но hash checkpoint отсутствовал; эту старую отметку криптографически продолжить было невозможно, поэтому после deploy произошёл последний одноразовый старт с нуля.
 - Новый checkpoint впервые сохранён на `37,748,736` bytes. Первый controlled PM2 restart записал событие `Проверка продолжена с 36.0 МиБ`, затем дошёл до `255,852,544` без отката.
 - Legacy hash-pass завершён: MD5/SHA-256 сохранены, после чего прежняя архитектура начала Yandex phase с нулевого remote offset. Release `ff5f28a` больше не повторяет эту фазу для новых torrent jobs.
-- Deploy `ff5f28a` подхватил уже созданную Yandex session с `58,720,256` bytes. Последний live snapshot: `83,886,080 / 1,575,770,112` (`5.32%`), status `transferring`, error null; Source `18,422,523 B/s`, Yandex `131,024 B/s`, bottleneck `yandex`. То есть progress после deploy не сбросился и продолжает расти по подтверждённым Yandex bytes.
+- Deploy `ff5f28a` подхватил Yandex session и довёл её до `377,487,360` bytes. Затем ложный peer recovery оставил job в hard failure на девять часов; Yandex временная upload session истекла и live `HEAD` вернул `404`. Частичный временный объект не является файлом `/Media` и не восстанавливается API, поэтому `279a295` создал новую upload session с `0 Б`. Два новых Yandex checkpoint подтверждены, последний `16,777,216` bytes: Yandex `131,000 B/s`, status `transferring`, error null. Дальнейший peer stall будет fresh-session retry, а не hard failure.
 
 # Completed operation
 
@@ -45,11 +47,11 @@ Job `e3191cc3-4e2d-4277-80ca-e1a6be4eb052` сохраняет `Мастер иг
 
 # Final validation
 
-- `npm test`: 38/38; server/web typecheck and production build passed локально и на VPS, включая one-pass hash/offset alignment, восстановление Yandex offset без готовых hashes, cross-process legacy torrent hash resume, shutdown race, pause gate, TCP transport, delete API, VK relay и directory XSPF regressions.
+- `npm test`: 39/39; server/web typecheck and production build passed локально и на VPS, включая fresh peer selection, persistent waiting retry, expired Yandex session classification, one-pass hash/offset alignment, cross-process legacy torrent hash resume, shutdown race, pause gate, TCP transport, delete API, VK relay и directory XSPF regressions.
 - Mobile Browser QA `390×844`: delete доступен во всех трёх вкладках, synthetic row удаляется, console errors отсутствуют.
 - Public/local health, current release и два restart/deploy продолжения без отката torrent checkpoint проверены. На повторном restart финального кода число исторических SQLite shutdown errors осталось `2 → 2`; production delete smoke `204`, WebDAV auth contract and production assets verified.
 - Synthetic media удалён recoverably в Yandex Trash; remote pull test destination отсутствует.
-- На VPS активен `ff5f28a`, rollback `2742c0e`; свободно около `1.8 GiB`.
+- На VPS активен `279a295`, rollback `ff5f28a`; оба release после pruning занимают по `95 MiB`, старый `2742c0e` удалён, свободно около `1.7 GiB`.
 
 # Known limits
 

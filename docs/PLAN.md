@@ -26,6 +26,7 @@
 - [x] Провести legal live torrent E2E с kill/restart recovery на отдельном безопасном target.
 - [x] Сохранять MD5/SHA-256 state torrent hash-pass в SQLite и продолжать проверку после source timeout, PM2 restart и deploy без отката к нулю.
 - [x] Убрать двойное чтение torrent: передавать source на Яндекс в один проход, синхронизируя hash state с подтверждённым remote offset и не сохраняя полный файл на VPS.
+- [x] Исправить ложный `нет пиров`: не разрывать активные wires, заменять зависший WebTorrent client fresh session, автоматически ожидать/повторять без перевода job в ошибку и отдельно восстанавливать expired Yandex upload session.
 - [x] Выпустить production hotfix torrent cache после подтверждения пользователя:
   - [x] Не снимать selection активного read-window при заполнении bounded cache.
   - [x] Показывать фактический прогресс и скорость hash-pass.

@@ -233,12 +233,11 @@ export class TorrentTransfer {
       || start < 0 || end < start || end >= expectedSize) {
       throw new Error('Некорректный диапазон торрент-потока')
     }
-    const source = readTorrentFile(
-      transfer.torrent, torrentFile, start, transfer.controller.signal,
-      undefined, this.config.torrentMetadataTimeoutMs,
-      () => refreshTorrentPeers(transfer.torrent),
+    const source = readTorrentRelayRange(
+      transfer.torrent, torrentFile, start, end, transfer.controller.signal,
+      Math.min(this.config.torrentMetadataTimeoutMs, 120_000),
     )
-    const stream = Readable.from(limitTorrentRange(source, end - start + 1), { objectMode: false })
+    const stream = Readable.from(source, { objectMode: false })
     stream.once('error', (error) => {
       transfer.relayError = error instanceof Error ? error : new Error('Торрент-поток оборвался')
     })
@@ -835,16 +834,36 @@ async function * readTorrentFile(
   }
 }
 
-async function * limitTorrentRange(source: AsyncIterable<Buffer>, length: number): AsyncGenerator<Buffer> {
-  let remaining = length
-  for await (const chunk of source) {
-    if (remaining <= 0) return
-    const output = chunk.byteLength <= remaining ? chunk : chunk.subarray(0, remaining)
-    remaining -= output.byteLength
-    yield output
-    if (remaining === 0) return
+async function * readTorrentRelayRange(
+  torrent: any,
+  file: any,
+  start: number,
+  end: number,
+  signal: AbortSignal,
+  inactivityTimeoutMs: number,
+): AsyncGenerator<Buffer> {
+  let offset = start
+  while (offset <= end) {
+    signal.throwIfAborted()
+    const length = Math.min(uploadChunkBytes, end - offset + 1)
+    const rangeStart = offset
+    const source = await readExactBufferWithRetry(
+      () => readTorrentFile(
+        torrent, file, rangeStart, signal, undefined, inactivityTimeoutMs,
+        () => refreshTorrentPeers(torrent),
+      ),
+      length,
+      signal,
+      undefined,
+      async (attempt) => {
+        refreshTorrentPeers(torrent)
+        await delay(750 * attempt, signal)
+      },
+      3,
+    )
+    yield source.buffer
+    offset += length
   }
-  if (remaining > 0) throw new TorrentSourceUnavailableError('Торрент-поток завершился раньше диапазона')
 }
 
 async function waitForRemoteMetadata(

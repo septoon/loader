@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import test from 'node:test'
-import { YandexDiskAdapter } from './yandex-disk.js'
+import { YandexDiskAdapter, YandexUploadSessionExpiredError } from './yandex-disk.js'
 
 test('Yandex uploader отправляет промежуточный Content-Range, а не остаток файла', async () => {
   const originalFetch = globalThis.fetch
@@ -44,6 +44,21 @@ test('Yandex upload offset восстанавливается без заран�
     assert.equal(calls, 4)
     assert.ok(seenHeaders.every((headers) => headers.get('size') === '10000000'))
     assert.ok(seenHeaders.every((headers) => !headers.has('etag') && !headers.has('sha256')))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('истёкшая Yandex upload session отличается от временной сетевой ошибки', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch
+  try {
+    await assert.rejects(
+      new YandexDiskAdapter('x'.repeat(32)).getStableUploadOffset(
+        'https://uploader.disk.yandex.net/upload/id', 10_000_000, 0,
+      ),
+      YandexUploadSessionExpiredError,
+    )
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -51,7 +51,7 @@ export function Sidebar({ filter, jobs, onFilterChange, onLoggedOut, onSettings 
 }
 
 export function isActive(job: Job): boolean {
-  return ['queued', 'transferring', 'verifying', 'paused'].includes(job.status)
+  return ['queued', 'transferring', 'verifying', 'waiting', 'paused'].includes(job.status)
 }
 
 export function isFailed(job: Job): boolean {

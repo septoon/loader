@@ -58,7 +58,7 @@ export async function buildApp({ config, database, runner, media }: Dependencies
     status: 'ok',
     storageConfigured: config.yandexToken !== null,
     torrentAvailable: true,
-    activeTransfers: database.listJobs().filter((job) => ['transferring', 'verifying'].includes(job.status)).length,
+    activeTransfers: database.listJobs().filter((job) => ['transferring', 'verifying', 'waiting'].includes(job.status)).length,
   }))
 
   app.get('/api/session', async (request) => ({ authenticated: isAuthenticated(request) }))

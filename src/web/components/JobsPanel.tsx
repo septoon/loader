@@ -21,7 +21,7 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
   const visibleJobs = useMemo(() => {
     const filtered = jobs.filter((job) => matchesFilter(job, filter))
     if (filter !== 'active') return filtered
-    const priority: Partial<Record<JobStatus, number>> = { transferring: 0, verifying: 1, queued: 2, paused: 3 }
+    const priority: Partial<Record<JobStatus, number>> = { transferring: 0, verifying: 1, queued: 2, waiting: 3, paused: 4 }
     return [...filtered].sort((left, right) => (priority[left.status] ?? 9) - (priority[right.status] ?? 9))
   }, [filter, jobs])
   const counts = {
@@ -107,10 +107,10 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
               <span className="row-expand-mobile"><Icon name="chevron" /></span>
             </button>
             <div className="job-actions" onClick={(event) => event.stopPropagation()}>
-              {(job.status === 'queued' || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)))
+              {(['queued', 'waiting'].includes(job.status) || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status)))
                 && <button type="button" onClick={() => void action(job, 'pause')}><Icon name="pause"/><span>Пауза</span></button>}
               {['paused', 'failed'].includes(job.status) && <button type="button" onClick={() => void action(job, 'resume')}><Icon name={job.status === 'failed' ? 'retry' : 'play'}/><span>{job.status === 'failed' ? 'Повторить' : 'Продолжить'}</span></button>}
-              {(['queued', 'paused', 'failed'].includes(job.status) || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind)) && ['transferring', 'verifying'].includes(job.status)))
+              {(['queued', 'waiting', 'paused', 'failed'].includes(job.status) || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind)) && ['transferring', 'verifying'].includes(job.status)))
                 && <button className="danger" type="button" onClick={() => void action(job, 'cancel')}><Icon name="cancel"/><span>Отменить</span></button>}
               {job.sourceKind === 'direct-url' && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
               <button className="danger" type="button" onClick={() => void remove(job)}><Icon name="trash"/><span>Удалить</span></button>
@@ -137,7 +137,7 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
         <div><dt>Режим</dt><dd>{modeLabel(job)}</dd></div>
         {job.bufferCapacityBytes !== null && job.bufferCapacityBytes > 0 && <div><dt>Буфер</dt><dd>{formatBytes(job.bufferedBytes ?? 0)} из {formatBytes(job.bufferCapacityBytes)}</dd></div>}
         {job.uploadRequestMs !== null && <div><dt>Последний PUT</dt><dd>{formatDuration(job.uploadRequestMs)} · блокировка write {formatDuration(job.uploadWriteBlockedMs ?? 0)}</dd></div>}
-        {job.errorMessage && <div className="error-detail"><dt>Ошибка</dt><dd>{job.errorMessage}</dd></div>}
+        {job.errorMessage && <div className={job.status === 'failed' ? 'error-detail' : undefined}><dt>{job.status === 'waiting' ? 'Ожидание' : 'Ошибка'}</dt><dd>{job.errorMessage}</dd></div>}
       </dl>}
       {tab === 'files' && (job.files.length > 0
         ? <div className="file-list">{job.files.map((file) => <div className="file-list-row" key={file.id}>
@@ -194,7 +194,7 @@ function progressBytesLabel(job: Job): string {
 
 function usesLegacyTwoPassProgress(job: Job): boolean {
   return !isRemoteImportSource(job.sourceKind)
-    && job.status === 'transferring'
+    && ['transferring', 'waiting'].includes(job.status)
     && job.files.length === 1
     && job.files[0]?.verified === true
 }
@@ -216,6 +216,7 @@ function matchesFilter(job: Job, filter: JobFilter): boolean {
 
 function subtitle(job: Job): string {
   if (job.status === 'queued') return 'Ожидает запуска'
+  if (job.status === 'waiting') return 'Переподключение к раздаче'
   if (job.status === 'paused') return 'Приостановлена'
   if (job.status === 'completed') return 'Сохранено на Яндекс Диске'
   if (job.status === 'failed') return 'Требуется внимание'
@@ -230,7 +231,7 @@ function subtitle(job: Job): string {
 
 function statusLabel(status: JobStatus): string {
   return ({
-    queued: 'В очереди', transferring: 'Передача', verifying: 'Проверка', paused: 'Пауза',
+    queued: 'В очереди', transferring: 'Передача', verifying: 'Проверка', waiting: 'Ожидание пиров', paused: 'Пауза',
     completed: 'Готово', failed: 'Ошибка', cancelled: 'Отменено',
   } satisfies Record<JobStatus, string>)[status]
 }

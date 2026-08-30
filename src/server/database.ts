@@ -59,6 +59,8 @@ interface EventRow {
   created_at: string
 }
 
+export const waitingRetryDelayMs = 30_000
+
 export interface InternalJobFile extends JobFile {
   jobId: string
   md5: string | null
@@ -201,15 +203,17 @@ export class JobDatabase {
     return row ? toInternalJob(row, this.listInternalFiles(id)) : null
   }
 
-  nextRunnableJob(): InternalJob | null {
+  nextRunnableJob(now = Date.now()): InternalJob | null {
+    const waitingBefore = new Date(now - waitingRetryDelayMs).toISOString()
     const row = this.#database.prepare(`
       SELECT * FROM jobs
       WHERE (status = 'transferring' AND (operation_href IS NOT NULL OR source_kind NOT IN ('direct-url', 'vkvideo')))
          OR status = 'verifying'
          OR status = 'queued'
-      ORDER BY CASE status WHEN 'transferring' THEN 0 WHEN 'verifying' THEN 1 ELSE 2 END, created_at
+         OR (status = 'waiting' AND updated_at <= ?)
+      ORDER BY CASE status WHEN 'transferring' THEN 0 WHEN 'verifying' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, created_at
       LIMIT 1
-    `).get() as unknown as JobRow | undefined
+    `).get(waitingBefore) as unknown as JobRow | undefined
     return row ? toInternalJob(row, this.listInternalFiles(row.id)) : null
   }
 
@@ -292,7 +296,7 @@ export class JobDatabase {
 
   pauseJob(id: string): InternalJob {
     const job = requireJob(this.getInternalJob(id))
-    const canPause = job.status === 'queued'
+    const canPause = ['queued', 'waiting'].includes(job.status)
       || (!isRemoteImportSource(job.sourceKind) && ['transferring', 'verifying'].includes(job.status))
     if (!canPause) throw new JobConflictError('Эту загрузку сейчас нельзя приостановить')
     const updated = this.updateJob(id, {
@@ -316,7 +320,7 @@ export class JobDatabase {
 
   cancelJob(id: string): InternalJob {
     const job = requireJob(this.getInternalJob(id))
-    const canCancel = ['queued', 'paused', 'failed'].includes(job.status)
+    const canCancel = ['queued', 'waiting', 'paused', 'failed'].includes(job.status)
       || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind))
         && ['transferring', 'verifying'].includes(job.status))
     if (!canCancel) throw new JobConflictError('Активный удалённый импорт нельзя безопасно отменить через API Яндекс Диска')

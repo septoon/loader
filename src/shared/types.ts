@@ -6,6 +6,7 @@ export type JobStatus =
   | 'queued'
   | 'transferring'
   | 'verifying'
+  | 'waiting'
   | 'paused'
   | 'completed'
   | 'failed'

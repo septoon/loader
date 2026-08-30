@@ -19,6 +19,8 @@ export interface FileDigests {
   sha256: string
 }
 
+export class YandexUploadSessionExpiredError extends Error {}
+
 export class YandexDiskAdapter {
   constructor(private readonly token: string) {}
 
@@ -144,6 +146,9 @@ export class YandexDiskAdapter {
       redirect: 'error',
       signal: AbortSignal.timeout(30_000),
     })
+    if ([404, 410].includes(response.status)) {
+      throw new YandexUploadSessionExpiredError('Временная сессия загрузки Яндекс Диска истекла')
+    }
     if (response.status !== 200) throw new YandexHttpError(response.status, `Не удалось получить контрольную точку: HTTP ${response.status}`)
     const uploaded = Number(response.headers.get('content-length'))
     if (!Number.isSafeInteger(uploaded) || uploaded < 0 || uploaded > totalBytes) {

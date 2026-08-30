@@ -10,7 +10,7 @@ import { selectTorrentFiles } from './security.js'
 import {
   bytesPerSecond, createMeasuredUploadBody, detectBottleneck, readExactBufferWithRetry, uploadChunkBytes,
 } from './transfer-buffer.js'
-import { YandexDiskAdapter, type FileDigests } from './yandex-disk.js'
+import { YandexDiskAdapter, YandexUploadSessionExpiredError, type FileDigests } from './yandex-disk.js'
 
 interface ActiveTransfer {
   controller: AbortController
@@ -39,6 +39,8 @@ export interface ResumableTorrentHash {
 }
 
 const torrentHashCheckpointIntervalBytes = 4 * 1024 * 1024
+
+export class TorrentSourceUnavailableError extends Error {}
 
 export const torrentClientOptions = {
   lsd: false,
@@ -290,12 +292,20 @@ export class TorrentTransfer {
     if (uploadHref) {
       try {
         offset = await this.storage.getStableUploadOffset(uploadHref, file.size)
-      } catch {
-        if (file.sourceCheckpoint || file.bytesTransferred > 0) {
+      } catch (error) {
+        if (error instanceof YandexUploadSessionExpiredError) {
+          uploadHref = null
+          file = this.database.updateJobFile(file.id, {
+            uploadHref: null, bytesTransferred: 0, sourceCheckpoint: null,
+          })
+          this.updateAggregate(jobId, 0)
+          this.database.addEvent(jobId, 'info', 'Временная сессия Яндекс Диска истекла; создана новая передача с 0 Б')
+        } else if (file.sourceCheckpoint || file.bytesTransferred > 0) {
           throw new Error('Яндекс временно не подтвердил сохранённую отметку; повторите позже')
+        } else {
+          uploadHref = null
+          file = this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
         }
-        uploadHref = null
-        this.database.updateJobFile(file.id, { uploadHref: null, bytesTransferred: 0 })
       }
     }
 
@@ -362,12 +372,8 @@ export class TorrentTransfer {
         length,
         signal,
         buffered,
-        async (attempt) => {
-          this.database.updateJob(jobId, { sourceSpeedBytesPerSecond: 0, bottleneck: 'source', bufferedBytes: 0 })
-          this.database.addEvent(jobId, 'info', `Источник torrent прервался, повтор ${attempt}/3 с ${formatBytes(rangeStart)}`)
-          this.notify()
-          await delay(400 * (2 ** (attempt - 1)), signal)
-        },
+        undefined,
+        1,
       )
       const buffer = sourceRead.buffer
       const sourceSpeed = bytesPerSecond(length, sourceRead.readMs)
@@ -583,10 +589,8 @@ async function catchUpTorrentHash(
       length,
       signal,
       undefined,
-      async (attempt) => {
-        refreshTorrentPeers(torrent)
-        await delay(400 * (2 ** (attempt - 1)), signal)
-      },
+      undefined,
+      1,
     )
     hash.update(source.buffer)
     onCheckpoint(hash.checkpoint())
@@ -741,13 +745,12 @@ async function * readTorrentFile(
 }
 
 export function refreshTorrentPeers(torrent: any): void {
-  const candidates = new Set<string>([
-    ...(torrent.loaderConnectedPeers ?? []),
-    ...(torrent.loaderDiscoveredPeers ?? []),
-  ])
+  const connected = new Set<string>(torrent.loaderConnectedPeers ?? [])
+  const candidates = new Set<string>(torrent.loaderDiscoveredPeers ?? [])
   let reconnectCount = 0
   for (const peer of candidates) {
     if (reconnectCount >= 50) break
+    if (connected.has(peer)) continue
     try {
       torrent.removePeer(peer)
       torrent.addPeer(peer)
@@ -773,9 +776,12 @@ function rememberDiscoveredPeers(torrent: any): void {
     if (peers.size >= 200) return
     peers.add(peer)
   })
-  torrent.on('wire', (_wire: unknown, peer: unknown) => {
+  torrent.on('wire', (wire: any, peer: unknown) => {
     if (typeof peer !== 'string') return
     connectedPeers.add(peer)
+    const forget = () => connectedPeers.delete(peer)
+    wire.once?.('close', forget)
+    wire.once?.('error', forget)
     if (connectedPeers.size <= 50) return
     const oldest = connectedPeers.values().next().value
     if (oldest) connectedPeers.delete(oldest)
@@ -820,7 +826,7 @@ async function nextWithAbort(
       timeout = setTimeout(() => {
         cleanup()
         void iterator.return?.()
-        reject(new Error('Данные торрента не поступают: нет доступных раздающих пиров'))
+        reject(new TorrentSourceUnavailableError('Торрент-поток не отвечает'))
       }, inactivityTimeoutMs)
     }
     iterator.next().then(

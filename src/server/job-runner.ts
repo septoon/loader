@@ -6,7 +6,7 @@ import type { AppConfig } from './config.js'
 import { JobDatabase, type InternalJob } from './database.js'
 import { sanitizePublicError } from './security.js'
 import { RutubeTransfer } from './rutube-transfer.js'
-import { TorrentTransfer } from './torrent-transfer.js'
+import { TorrentSourceUnavailableError, TorrentTransfer } from './torrent-transfer.js'
 import { buildVkRelayUrl } from './vk-relay.js'
 import { YandexDiskAdapter } from './yandex-disk.js'
 
@@ -128,6 +128,10 @@ export class JobRunner {
         if (this.#stopping) return
         const current = this.database.getInternalJob(job.id)
         if (current && ['paused', 'cancelled'].includes(current.status)) return
+        if (error instanceof TorrentSourceUnavailableError) {
+          this.waitForTorrentPeers(job)
+          return
+        }
         this.fail(job, sanitizePublicError(error))
       }
       return
@@ -188,6 +192,18 @@ export class JobRunner {
     })
     this.database.addEvent(job.id, 'error', message)
     this.notify(failed)
+  }
+
+  private waitForTorrentPeers(job: InternalJob): void {
+    const current = this.database.getInternalJob(job.id)
+    if (!current || ['paused', 'cancelled'].includes(current.status)) return
+    const waiting = this.database.updateJob(job.id, {
+      status: 'waiting', speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0,
+      bottleneck: 'source', bufferedBytes: 0,
+      errorMessage: 'Переподключение к раздаче: новая peer-сессия запустится автоматически',
+    })
+    this.database.addEvent(job.id, 'info', 'Торрент-поток перестал отвечать; через 30 секунд будет создана новая peer-сессия')
+    this.notify(waiting)
   }
 
   private abortTransfer(job: InternalJob): void {

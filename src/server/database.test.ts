@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { JobConflictError, JobDatabase } from './database.js'
+import { JobConflictError, JobDatabase, waitingRetryDelayMs } from './database.js'
 
 test('очередь и события сохраняются после повторного открытия SQLite', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'loader-db-'))
@@ -54,6 +54,18 @@ test('очередь и события сохраняются после пов�
     const deleted = second.deleteJob(cancelled.id)
     assert.equal(deleted.id, cancelled.id)
     assert.equal(second.getJob(cancelled.id), null)
+
+    second.updateJob(transferring.id, { status: 'completed' })
+    const waiting = second.createJob({
+      source: `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+      sourceKind: 'magnet', sourceLabel: 'BitTorrent', title: 'waiting.torrent', destination: 'movies',
+      destinationPath: '/Media/Movies/waiting.torrent', supported: true, note: 'test',
+    })
+    const waitingSince = Date.now()
+    second.updateJob(waiting.id, { status: 'waiting' })
+    assert.equal(second.nextRunnableJob(waitingSince)?.id, undefined)
+    assert.equal(second.nextRunnableJob(waitingSince + waitingRetryDelayMs + 1)?.id, waiting.id)
+    assert.equal(second.pauseJob(waiting.id).status, 'paused')
     second.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

@@ -128,7 +128,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .job-status { font-size: 13px; font-weight: 620; color: var(--blue); }
 .status-completed { color: #168653; }
 .status-failed, .status-cancelled { color: var(--danger); }
-.status-paused { color: #936009; }
+.status-waiting, .status-paused { color: #936009; }
 .progress-wrap { display: grid; grid-template-columns: 43px 1fr; align-items: center; gap: 5px 10px; }
 .progress-label { color: var(--blue); font-size: 14px; font-variant-numeric: tabular-nums; }
 .progress-track { position: relative; height: 6px; overflow: hidden; border-radius: 3px; background: #e5e8ed; }

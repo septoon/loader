@@ -114,8 +114,8 @@ test('при ожидании данных повторный поиск пир�
     },
   })
 
-  assert.deepEqual(removed, ['peer-2', 'peer-1'])
-  assert.deepEqual(added, ['peer-2', 'peer-1'])
+  assert.deepEqual(removed, ['peer-1'])
+  assert.deepEqual(added, ['peer-1'])
   assert.deepEqual(updates, [{ numwant: 50 }])
   assert.doesNotThrow(() => refreshTorrentPeers({}))
 })

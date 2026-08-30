@@ -112,7 +112,6 @@ export function JobsPanel({ jobs, filter, onFilterChange, onChanged, onError }: 
               {['paused', 'failed'].includes(job.status) && <button type="button" onClick={() => void action(job, 'resume')}><Icon name={job.status === 'failed' ? 'retry' : 'play'}/><span>{job.status === 'failed' ? 'Повторить' : 'Продолжить'}</span></button>}
               {(['queued', 'waiting', 'paused', 'failed'].includes(job.status) || ((job.sourceKind === 'vkvideo' || !isRemoteImportSource(job.sourceKind)) && ['transferring', 'verifying'].includes(job.status)))
                 && <button className="danger" type="button" onClick={() => void action(job, 'cancel')}><Icon name="cancel"/><span>Отменить</span></button>}
-              {job.sourceKind === 'direct-url' && ['transferring', 'verifying'].includes(job.status) && <span className="action-note">Импорт выполняет Яндекс Диск</span>}
               <button className="danger" type="button" onClick={() => void remove(job)}><Icon name="trash"/><span>Удалить</span></button>
             </div>
             {expanded && <JobDetails job={job} tab={detailTab} events={events[job.id]} onTab={(tab) => void setTab(job, tab)} />}
@@ -135,15 +134,15 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
         <div><dt>Источник</dt><dd>{job.sourceLabel}</dd></div>
         <div><dt>Добавлено</dt><dd>{formatDate(job.createdAt)}</dd></div>
         <div><dt>Режим</dt><dd>{modeLabel(job)}</dd></div>
-        {job.bufferCapacityBytes !== null && job.bufferCapacityBytes > 0 && <div><dt>Буфер</dt><dd>{formatBytes(job.bufferedBytes ?? 0)} из {formatBytes(job.bufferCapacityBytes)}</dd></div>}
-        {job.uploadRequestMs !== null && <div><dt>Последний PUT</dt><dd>{formatDuration(job.uploadRequestMs)} · блокировка write {formatDuration(job.uploadWriteBlockedMs ?? 0)}</dd></div>}
+        {!usesTorrentPull(job) && job.bufferCapacityBytes !== null && job.bufferCapacityBytes > 0 && <div><dt>Буфер</dt><dd>{formatBytes(job.bufferedBytes ?? 0)} из {formatBytes(job.bufferCapacityBytes)}</dd></div>}
+        {!usesTorrentPull(job) && job.uploadRequestMs !== null && <div><dt>Последний PUT</dt><dd>{formatDuration(job.uploadRequestMs)} · блокировка write {formatDuration(job.uploadWriteBlockedMs ?? 0)}</dd></div>}
         {job.errorMessage && <div className={job.status === 'failed' ? 'error-detail' : undefined}><dt>{job.status === 'waiting' ? 'Ожидание' : 'Ошибка'}</dt><dd>{job.errorMessage}</dd></div>}
       </dl>}
       {tab === 'files' && (job.files.length > 0
         ? <div className="file-list">{job.files.map((file) => <div className="file-list-row" key={file.id}>
           <Icon name={file.status === 'completed' ? 'check' : 'files'} />
-          <span><strong>{file.relativePath}</strong><small>{formatBytes(file.size)} · {fileStatusLabel(file.status)}{file.verified && file.status === 'transferring' ? ' · проверка завершена' : ''}</small></span>
-          <span>{file.size > 0 ? `${Math.round(file.bytesTransferred / file.size * 100)}%` : '—'}</span>
+          <span><strong>{file.relativePath}</strong><small>{formatBytes(file.size)} · {usesTorrentPull(job) ? 'Яндекс импортирует поток' : fileStatusLabel(file.status)}{!usesTorrentPull(job) && file.verified && file.status === 'transferring' ? ' · проверка завершена' : ''}</small></span>
+          <span>{usesTorrentPull(job) ? '—' : file.size > 0 ? `${Math.round(file.bytesTransferred / file.size * 100)}%` : '—'}</span>
         </div>)}</div>
         : <div className="detail-placeholder"><Icon name="files"/><span>{filesPlaceholder(job)}</span></div>)}
       {tab === 'log' && <div className="event-log">
@@ -156,6 +155,9 @@ function JobDetails({ job, tab, events, onTab }: { job: Job, tab: DetailTab, eve
 }
 
 function Throughput({ job }: { job: Job }) {
+  if (usesTorrentPull(job)) {
+    return <span className="job-throughput job-throughput-note">Скорость определяет Яндекс</span>
+  }
   return <span className="job-throughput">
     <span><em>Источник</em><strong>{formatRate(job.sourceSpeedBytesPerSecond)}</strong></span>
     <span><em>Яндекс</em><strong>{formatRate(job.yandexUploadSpeedBytesPerSecond)}</strong></span>
@@ -173,7 +175,7 @@ function Progress({ job }: { job: Job }) {
   const value = stageValue === null ? null : Math.round((twoPass ? 0.5 + job.progress! / 2 : job.progress!) * 100)
   const indeterminate = value === null && ['transferring', 'verifying'].includes(job.status)
   return <span className="progress-wrap">
-    <span className="progress-label">{value === null ? statusLabel(job.status) : `${value}%`}</span>
+    <span className="progress-label">{value === null ? '—' : `${value}%`}</span>
     <span className={indeterminate ? 'progress-track is-indeterminate' : 'progress-track'}>
       <span style={indeterminate ? undefined : { width: `${value ?? 0}%` }} />
     </span>
@@ -182,6 +184,7 @@ function Progress({ job }: { job: Job }) {
 }
 
 function progressBytesLabel(job: Job): string {
+  if (usesTorrentPull(job)) return 'Прогресс по байтам недоступен'
   if (isRemoteImportSource(job.sourceKind) && job.bytesTransferred === null
     && ['transferring', 'verifying'].includes(job.status)) {
     return 'Яндекс не сообщает прогресс по байтам'
@@ -193,7 +196,8 @@ function progressBytesLabel(job: Job): string {
 }
 
 function usesLegacyTwoPassProgress(job: Job): boolean {
-  return !isRemoteImportSource(job.sourceKind)
+  return !usesTorrentPull(job)
+    && !isRemoteImportSource(job.sourceKind)
     && ['transferring', 'waiting'].includes(job.status)
     && job.files.length === 1
     && job.files[0]?.verified === true
@@ -224,6 +228,7 @@ function subtitle(job: Job): string {
   if (job.status === 'verifying') return isRemoteImportSource(job.sourceKind)
     ? 'Проверка на Яндекс Диске'
     : job.sourceKind === 'rutube' ? 'Проверка потока Rutube' : 'Проверка торрент-источника'
+  if (usesTorrentPull(job)) return 'Импорт торрента Яндексом'
   return usesLegacyTwoPassProgress(job)
     ? 'Проверка завершена · передача на Яндекс Диск'
     : 'Передача на Яндекс Диск'
@@ -252,6 +257,7 @@ function formatDuration(milliseconds: number): string {
 }
 
 function bottleneckLabel(job: Job): string {
+  if (usesTorrentPull(job)) return 'Не измеряется'
   if (isRemoteImportSource(job.sourceKind)) return 'Не измеряется'
   if (job.bottleneck === 'source') return job.sourceKind === 'rutube' ? 'Rutube' : 'Торрент'
   if (job.bottleneck === 'yandex') return 'Яндекс Диск'
@@ -263,7 +269,15 @@ function modeLabel(job: Job): string {
   if (job.sourceKind === 'direct-url') return 'Прямой импорт без передачи через сервер'
   if (job.sourceKind === 'vkvideo') return 'VK Видео → защищённый поток → Яндекс Диск без сохранения на VPS'
   if (job.sourceKind === 'rutube') return 'Rutube HLS → Яндекс Диск без сохранения на VPS'
+  if (usesTorrentPull(job)) return 'BitTorrent → защищённый поток → импорт Яндекс Диска без сохранения на VPS'
   return 'Последовательная передача без сохранения на сервере'
+}
+
+function usesTorrentPull(job: Job): boolean {
+  return ['magnet', 'torrent-file'].includes(job.sourceKind)
+    && job.status === 'transferring'
+    && job.progress === null
+    && job.bytesTransferred === null
 }
 
 function filesPlaceholder(job: Job): string {

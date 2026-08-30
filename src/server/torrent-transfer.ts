@@ -305,6 +305,7 @@ export class TorrentTransfer {
         status: 'transferring', progress: null, bytesTransferred: null,
         speedBytesPerSecond: 0, sourceSpeedBytesPerSecond: 0, yandexUploadSpeedBytesPerSecond: 0,
         bottleneck: null, bufferedBytes: 0, bufferCapacityBytes: null, errorMessage: null,
+        uploadRequestMs: null, uploadWriteBlockedMs: null,
       })
       this.database.addEvent(jobId, 'info', 'Яндекс Диск начал быстрый импорт торрент-потока через защищённый relay')
       this.notify()

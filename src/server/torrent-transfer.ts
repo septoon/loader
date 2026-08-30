@@ -214,7 +214,7 @@ export class TorrentTransfer {
     } finally {
       this.#active.delete(job.id)
       try {
-        await destroyClient(client)
+        await destroyClient(transfer.client)
         await rm(cachePath, { recursive: true, force: true })
       } finally {
         transfer.finish()
@@ -234,14 +234,42 @@ export class TorrentTransfer {
       throw new Error('Некорректный диапазон торрент-потока')
     }
     const source = readTorrentRelayRange(
-      transfer.torrent, torrentFile, start, end, transfer.controller.signal,
-      Math.min(this.config.torrentMetadataTimeoutMs, 120_000),
+      () => transfer.torrent,
+      fileIndex,
+      start,
+      end,
+      transfer.controller.signal,
+      Math.min(this.config.torrentMetadataTimeoutMs, 30_000),
+      () => this.replaceRelayTorrentClient(jobId, transfer),
     )
     const stream = Readable.from(source, { objectMode: false })
     stream.once('error', (error) => {
       transfer.relayError = error instanceof Error ? error : new Error('Торрент-поток оборвался')
     })
     return stream
+  }
+
+  private async replaceRelayTorrentClient(jobId: string, transfer: ActiveTransfer): Promise<void> {
+    transfer.controller.signal.throwIfAborted()
+    const job = this.database.getInternalJob(jobId)
+    if (!job) throw new Error('Загрузка удалена')
+    await destroyClient(transfer.client)
+    transfer.controller.signal.throwIfAborted()
+
+    const client = new WebTorrent(torrentClientOptions)
+    transfer.client = client
+    transfer.torrent = null
+    const torrentId = await this.loadTorrentId(job)
+    const torrent = await openTorrent(client, torrentId, {
+      signal: transfer.controller.signal,
+      timeoutMs: this.config.torrentMetadataTimeoutMs,
+      cachePath: path.join(this.config.pieceCacheDir, jobId),
+      maxBytes: this.config.pieceCacheMaxBytes,
+      reserveBytes: this.config.diskReserveBytes,
+    })
+    transfer.torrent = torrent
+    this.database.addEvent(jobId, 'info', 'Зависшая torrent-сессия заменена без перезапуска импорта Яндекс Диска')
+    this.notify()
   }
 
   private async processSingleFileRemoteImport(
@@ -835,33 +863,51 @@ async function * readTorrentFile(
 }
 
 async function * readTorrentRelayRange(
-  torrent: any,
-  file: any,
+  getTorrent: () => any,
+  fileIndex: number,
   start: number,
   end: number,
   signal: AbortSignal,
   inactivityTimeoutMs: number,
+  replaceClient: () => Promise<void>,
 ): AsyncGenerator<Buffer> {
   let offset = start
   while (offset <= end) {
     signal.throwIfAborted()
     const length = Math.min(uploadChunkBytes, end - offset + 1)
     const rangeStart = offset
-    const source = await readExactBufferWithRetry(
-      () => readTorrentFile(
-        torrent, file, rangeStart, signal, undefined, inactivityTimeoutMs,
-        () => refreshTorrentPeers(torrent),
-      ),
-      length,
-      signal,
-      undefined,
-      async (attempt) => {
-        refreshTorrentPeers(torrent)
-        await delay(750 * attempt, signal)
-      },
-      3,
-    )
-    yield source.buffer
+    let buffer: Buffer | null = null
+    let lastError: unknown
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      signal.throwIfAborted()
+      const torrent = getTorrent()
+      const file = torrent?.files?.[fileIndex]
+      if (!torrent || !file) throw new Error('Торрент-сессия сейчас недоступна')
+      try {
+        const source = await readExactBufferWithRetry(
+          () => readTorrentFile(
+            torrent, file, rangeStart, signal, undefined, inactivityTimeoutMs,
+            () => refreshTorrentPeers(torrent),
+          ),
+          length,
+          signal,
+          undefined,
+          undefined,
+          1,
+        )
+        buffer = source.buffer
+        break
+      } catch (error) {
+        signal.throwIfAborted()
+        lastError = error
+        if (attempt === 3) break
+        await replaceClient()
+      }
+    }
+    if (!buffer) {
+      throw lastError instanceof Error ? lastError : new TorrentSourceUnavailableError('Торрент-поток не отвечает')
+    }
+    yield buffer
     offset += length
   }
 }

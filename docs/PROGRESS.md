@@ -1,5 +1,32 @@
 # Progress
 
+## 2026-08-30 — быстрый torrent pull завершил проблемный файл, UI больше не показывает ложную проверку
+
+Production-измерение прежнего однопроходного `Content-Range PUT` отделило source от destination: torrent source отдавал до `25,451,525 B/s`, а каждый 8-МиБ PUT в Яндекс занимал около `64 s` и давал только `~130,952 B/s`. Размер chunk, backpressure и write blocking не были причиной: тело PUT заполнялось быстро, ожидание происходило внутри upload endpoint Яндекса.
+
+Для single-file torrent реализован быстрый server-to-server pull без полного staging на VPS:
+
+- Loader выдаёт Яндексу job-scoped Basic-auth URL `/torrent-import/:jobId/:fileIndex`;
+- relay поддерживает `HEAD`, byte range и последовательное чтение через bounded piece-cache;
+- одна операция импорта Яндекса получает файл непрерывно, а WebTorrent client планово заменяется каждые `48 MiB`, чтобы не накапливать зависшее selection/wire state;
+- при временном отсутствии данных job переходит в `waiting` и повторяется автоматически вместо `HTTP 502`/hard failure;
+- UI не выдумывает byte progress или раздельные скорости для demand-driven pull: показывает `Импорт торрента Яндексом` и `Прогресс по байтам недоступен`.
+
+Проблемный job `a0c9c780-0d78-4e7b-80ad-5cc26e79133d` завершён без сохранения полного файла на VPS:
+
+| Метрика | Результат |
+| --- | ---: |
+| Размер | `1,575,770,112` bytes |
+| Время защищённого GET | `621.523 s` |
+| Средняя скорость | `2.418 MiB/s` |
+| Итоговый status | `completed` |
+| Yandex size | `1,575,770,112` bytes |
+| Yandex MD5 | `731b4d884125bf255d1d06ec155eef1e` |
+
+Release `44ccd19` также исправляет layout: compact desktop columns включаются до `1380 px`, card layout — до `1024 px`, indeterminate status больше не рисуется поверх progress bar, длинные подписи переносятся, на iPhone учитываются safe-area сверху и снизу. Проверены `1280`, `1024` и `390 px` без горизонтального overflow и обрезанных действий.
+
+Финальная проверка: локально и в exact VPS release прошли typecheck, tests `40/40` и production build; public health `200`, PM2 `loader`/`loader-vlc` online с zero restarts. Production WebDAV подтвердил `PROPFIND 207`, каталоги Movies/TV и file range `206`, `564` bytes.
+
 ## 2026-08-30 — устранён ложный `нет пиров` и автоматизирован fresh-session recovery
 
 Production job остановился на `377,487,360 / 1,575,770,112` bytes (`360 MiB`) после четырёх последовательных 10-минутных source timeout. UI показывал `Данные торрента не поступают: нет доступных раздающих пиров`, но отдельная read-only диагностика тем же `.torrent` и тем же TCP WebTorrent transport установила обратное: свежая client session за 22 секунды подключила `41` peer, все `41` имели требуемую piece `180`, и piece была успешно получена.

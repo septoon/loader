@@ -43,6 +43,7 @@ export interface ResumableTorrentHash {
 }
 
 const torrentHashCheckpointIntervalBytes = 4 * 1024 * 1024
+const torrentRelayClientWindowBytes = 48 * 1024 * 1024
 
 export class TorrentSourceUnavailableError extends Error {}
 
@@ -240,7 +241,7 @@ export class TorrentTransfer {
       end,
       transfer.controller.signal,
       Math.min(this.config.torrentMetadataTimeoutMs, 30_000),
-      () => this.replaceRelayTorrentClient(jobId, transfer),
+      (stalled) => this.replaceRelayTorrentClient(jobId, transfer, stalled),
     )
     const stream = Readable.from(source, { objectMode: false })
     stream.once('error', (error) => {
@@ -249,7 +250,11 @@ export class TorrentTransfer {
     return stream
   }
 
-  private async replaceRelayTorrentClient(jobId: string, transfer: ActiveTransfer): Promise<void> {
+  private async replaceRelayTorrentClient(
+    jobId: string,
+    transfer: ActiveTransfer,
+    stalled: boolean,
+  ): Promise<void> {
     transfer.controller.signal.throwIfAborted()
     const job = this.database.getInternalJob(jobId)
     if (!job) throw new Error('Загрузка удалена')
@@ -268,7 +273,9 @@ export class TorrentTransfer {
       reserveBytes: this.config.diskReserveBytes,
     })
     transfer.torrent = torrent
-    this.database.addEvent(jobId, 'info', 'Зависшая torrent-сессия заменена без перезапуска импорта Яндекс Диска')
+    this.database.addEvent(jobId, 'info', stalled
+      ? 'Зависшая torrent-сессия заменена без перезапуска импорта Яндекс Диска'
+      : 'Torrent-сессия планово обновлена без перезапуска импорта Яндекс Диска')
     this.notify()
   }
 
@@ -313,8 +320,8 @@ export class TorrentTransfer {
       if (operation.status === 'success') break
       if (operation.status === 'failed') {
         this.database.updateJob(jobId, { operationHref: null })
-        if (transfer.relayError) throw transfer.relayError
-        throw new Error('Яндекс Диск сообщил об ошибке быстрого импорта торрент-потока')
+        throw new TorrentSourceUnavailableError(transfer.relayError?.message
+          ?? 'Яндекс Диск прервал быстрый импорт торрент-потока')
       }
       await delay(1_500, signal)
     }
@@ -869,9 +876,10 @@ async function * readTorrentRelayRange(
   end: number,
   signal: AbortSignal,
   inactivityTimeoutMs: number,
-  replaceClient: () => Promise<void>,
+  replaceClient: (stalled: boolean) => Promise<void>,
 ): AsyncGenerator<Buffer> {
   let offset = start
+  let clientBytes = 0
   while (offset <= end) {
     signal.throwIfAborted()
     const length = Math.min(uploadChunkBytes, end - offset + 1)
@@ -901,7 +909,8 @@ async function * readTorrentRelayRange(
         signal.throwIfAborted()
         lastError = error
         if (attempt === 3) break
-        await replaceClient()
+        await replaceClient(true)
+        clientBytes = 0
       }
     }
     if (!buffer) {
@@ -909,6 +918,11 @@ async function * readTorrentRelayRange(
     }
     yield buffer
     offset += length
+    clientBytes += length
+    if (offset <= end && clientBytes >= torrentRelayClientWindowBytes) {
+      await replaceClient(false)
+      clientBytes = 0
+    }
   }
 }
 
